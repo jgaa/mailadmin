@@ -1,0 +1,13 @@
+---
+mailservers:
+  hosts:
+    staging:
+      ansible_host: staging.example.net
+      ansible_user: root
+      mailadmin_mode: staging
+      mailadmin_initialize_staging: true
+      mailadmin_image: mailadmin:staging
+      # Set a controller-side image archive, or use a registry image instead.
+      mailadmin_image_archive: /absolute/path/mailadmin-staging.tar
+      mailadmin_start_service: false
+      # Provide vault_mailadmin_database_password in an encrypted vars file.

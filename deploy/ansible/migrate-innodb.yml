@@ -1,0 +1,88 @@
+---
+- name: Convert existing mail tables during an agreed maintenance window
+  hosts: mailservers
+  become: true
+  gather_facts: false
+  vars:
+    mailadmin_writers_stopped: false
+    mailadmin_backup_directory: /var/backups/mailadmin
+    mailadmin_database_socket: /run/mysqld/mysqld.sock
+  pre_tasks:
+    - name: Require the operator to quiesce all legacy database writers first
+      ansible.builtin.assert:
+        that: mailadmin_writers_stopped | bool
+        fail_msg: Stop legacy admin writers and schedule maintenance, then pass -e mailadmin_writers_stopped=true.
+  tasks:
+    - name: Inspect engines without modifying the database
+      ansible.mariadb.mariadb_query:
+        config_file: ''
+        login_unix_socket: "{{ mailadmin_database_socket }}"
+        query: >-
+          SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA='mail' AND TABLE_NAME IN ('organization','passwd','alias','forward')
+      register: mailadmin_tables
+      check_mode: false
+    - name: Require all four legacy tables
+      ansible.builtin.assert:
+        that:
+          - mailadmin_tables.query_result[0] | length == 4
+          - mailadmin_tables.query_result[0] | map(attribute='ENGINE') | difference(['MyISAM', 'InnoDB']) | length == 0
+    - name: Identify tables still requiring conversion
+      ansible.builtin.set_fact:
+        mailadmin_myisam_tables: "{{ mailadmin_tables.query_result[0] | selectattr('ENGINE', 'equalto', 'MyISAM') | list }}"
+    - name: Back up the database before the first conversion in this run
+      when: mailadmin_myisam_tables | length > 0 and not ansible_check_mode
+      block:
+        - name: Create protected backup directory
+          ansible.builtin.file:
+            path: "{{ mailadmin_backup_directory }}"
+            state: directory
+            owner: root
+            group: root
+            mode: '0700'
+        - name: Allocate a unique protected dump path
+          ansible.builtin.tempfile:
+            state: file
+            path: "{{ mailadmin_backup_directory }}"
+            prefix: mail-before-innodb-
+            suffix: .sql
+          register: mailadmin_dump
+        - name: Dump MyISAM consistently while writers are quiesced
+          ansible.builtin.command:
+            argv:
+              - mariadb-dump
+              - --protocol=socket
+              - "--socket={{ mailadmin_database_socket }}"
+              - --lock-tables
+              - --databases
+              - mail
+              - "--result-file={{ mailadmin_dump.path }}"
+          changed_when: true
+        - name: Confirm a nonempty backup exists before ALTER TABLE
+          ansible.builtin.stat:
+            path: "{{ mailadmin_dump.path }}"
+          register: mailadmin_dump_stat
+        - name: Require backup data
+          ansible.builtin.assert:
+            that: mailadmin_dump_stat.stat.size | int > 0
+        - name: Convert remaining tables without changing fields or collation
+          ansible.mariadb.mariadb_query:
+            config_file: ''
+            login_unix_socket: "{{ mailadmin_database_socket }}"
+            query: "ALTER TABLE mail.{{ item.TABLE_NAME }} ENGINE=InnoDB"
+          loop: "{{ mailadmin_myisam_tables }}"
+        - name: Verify every legacy table now uses InnoDB
+          ansible.mariadb.mariadb_query:
+            config_file: ''
+            login_unix_socket: "{{ mailadmin_database_socket }}"
+            query: >-
+              SELECT COUNT(*) AS remaining FROM information_schema.TABLES
+              WHERE TABLE_SCHEMA='mail' AND TABLE_NAME IN ('organization','passwd','alias','forward')
+              AND ENGINE <> 'InnoDB'
+          register: mailadmin_conversion
+        - name: Require complete conversion
+          ansible.builtin.assert:
+            that: mailadmin_conversion.query_result[0][0].remaining | int == 0
+        - name: Report protected backup location
+          ansible.builtin.debug:
+            msg: "Backup retained at {{ mailadmin_dump.path }}. No Courier query or password changes were made."

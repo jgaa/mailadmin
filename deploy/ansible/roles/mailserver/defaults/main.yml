@@ -1,0 +1,21 @@
+---
+mailadmin_mode: existing
+mailadmin_initialize_staging: false
+mailadmin_uid: 107
+mailadmin_gid: 113
+mailadmin_config_group: mailadmin-config
+mailadmin_config_gid: 2107
+mailadmin_database_socket: /run/mysqld/mysqld.sock
+mailadmin_database_user: mailadmin
+mailadmin_spool: /var/lib/courier/spool-virtusers
+mailadmin_state: /var/lib/mailadmin
+mailadmin_endpoint: 127.0.0.1
+mailadmin_port: "8080"
+mailadmin_log_level: info
+mailadmin_start_service: false
+mailadmin_image_archive: ""
+mailadmin_package_state: present
+mailadmin_administration: false
+mailadmin_key_directory: /etc/mailadmin/credentials
+mailadmin_auth_database_user: mailadmin_courier
+mailadmin_spam_cleanup_seconds: 3600

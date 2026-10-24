@@ -1,0 +1,7 @@
+---
+- name: Prepare or upgrade the Debian mail server runtime
+  hosts: mailservers
+  become: true
+  gather_facts: true
+  roles:
+    - mailserver

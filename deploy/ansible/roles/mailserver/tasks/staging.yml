@@ -1,0 +1,70 @@
+---
+- name: Require the database password before provisioning staging authentication
+  ansible.builtin.assert:
+    that:
+      - vault_mailadmin_database_password is defined
+      - vault_mailadmin_database_password is match('^[a-f0-9]{64}$')
+      - vault_mailadmin_auth_database_password is defined
+      - vault_mailadmin_auth_database_password is match('^[a-f0-9]{64}$')
+      - vault_mailadmin_auth_database_password != vault_mailadmin_database_password
+      - mailadmin_auth_database_user != mailadmin_database_user
+      - mailadmin_auth_database_user is match('^[A-Za-z_][A-Za-z0-9_]*$')
+  no_log: true
+- name: Create staging database
+  ansible.mariadb.mariadb_db:
+    name: mail
+    state: present
+    encoding: latin1
+    collation: latin1_swedish_ci
+    config_file: ''
+    login_unix_socket: "{{ mailadmin_database_socket }}"
+- name: Check for existing staging tables before importing synthetic data
+  ansible.mariadb.mariadb_query:
+    config_file: ''
+    login_unix_socket: "{{ mailadmin_database_socket }}"
+    query: SELECT COUNT(*) AS table_count, SUM(TABLE_NAME IN ('organization','passwd','alias','forward')) AS legacy_count FROM information_schema.TABLES WHERE TABLE_SCHEMA='mail'
+  register: mailadmin_staging_tables
+- name: Refuse to silently adopt a partially initialized staging schema
+  ansible.builtin.assert:
+    that: (mailadmin_staging_tables.query_result[0][0].table_count | int == 0) or (mailadmin_staging_tables.query_result[0][0].legacy_count | int == 4)
+- name: Copy the synthetic schema only into a new staging installation
+  ansible.builtin.template:
+    src: staging.sql.j2
+    dest: /var/cache/mailadmin/staging.sql
+    owner: root
+    group: root
+    mode: '0600'
+  when: mailadmin_staging_tables.query_result[0][0].table_count | int == 0
+- name: Import synthetic staging data once
+  ansible.mariadb.mariadb_db:
+    name: mail
+    state: import
+    target: /var/cache/mailadmin/staging.sql
+    config_file: ''
+    login_unix_socket: "{{ mailadmin_database_socket }}"
+  when: mailadmin_staging_tables.query_result[0][0].table_count | int == 0
+- name: Create a separate read-only staging Courier authentication login
+  ansible.mariadb.mariadb_user:
+    name: '{{ mailadmin_auth_database_user }}'
+    host: localhost
+    password: '{{ vault_mailadmin_auth_database_password }}'
+    priv: mail.*:SELECT
+    config_file: ''
+    login_unix_socket: '{{ mailadmin_database_socket }}'
+    state: present
+  no_log: true
+- name: Configure staging Courier authentication against the staging database
+  ansible.builtin.template:
+    src: authmysqlrc.j2
+    dest: /etc/courier/authmysqlrc
+    owner: root
+    group: courier
+    mode: '0640'
+  no_log: true
+  notify: Restart staging authentication
+- name: Select only authmysql for staging
+  ansible.builtin.lineinfile:
+    path: /etc/courier/authdaemonrc
+    regexp: '^authmodulelist='
+    line: 'authmodulelist="authmysql"'
+  notify: Restart staging authentication

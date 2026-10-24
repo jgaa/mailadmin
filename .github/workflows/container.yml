@@ -1,0 +1,84 @@
+name: Build and publish Mailadmin container
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - CMakeLists.txt
+      - Dockerfile
+      - .dockerignore
+      - src/**
+      - tests/*.cpp
+      - .github/workflows/container.yml
+      - '!**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  container:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Read image metadata from the root project version
+        id: metadata
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+
+          versions = re.findall(
+              r'(?im)^\s*project\(\s*mailadmin\s+VERSION\s+(\d+\.\d+\.\d+)\b',
+              Path('CMakeLists.txt').read_text())
+          if len(versions) != 1:
+              raise SystemExit('Expected one literal Mailadmin version in root CMakeLists.txt')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('image=ghcr.io/' + os.environ['GITHUB_REPOSITORY'].lower() + '\n')
+              output.write('version=' + versions[0] + '\n')
+          PY
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.MY_PAT }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build, run regression tests, and publish
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.metadata.outputs.image }}:latest
+            ${{ steps.metadata.outputs.image }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
+          cache-from: type=gha,scope=mailadmin-amd64
+          cache-to: type=gha,scope=mailadmin-amd64,mode=max
+          # Manual runs deliberately refresh upstream dependency/base layers.
+          no-cache: ${{ github.event_name == 'workflow_dispatch' }}

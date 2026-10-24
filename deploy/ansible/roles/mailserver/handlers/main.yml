@@ -1,0 +1,11 @@
+---
+- name: Restart staging authentication
+  ansible.builtin.systemd_service:
+    name: courier-authdaemon
+    state: restarted
+  when: mailadmin_mode == 'staging' and mailadmin_initialize_staging | bool
+- name: Restart enabled inventory daemon
+  ansible.builtin.systemd_service:
+    name: mailadmin
+    state: restarted
+  when: mailadmin_start_service | bool

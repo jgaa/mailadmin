@@ -66,3 +66,9 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Private deployment inputs and exported images
+deploy/ansible/inventory.yml
+deploy/ansible/vault.yml
+*.tar
+__pycache__/

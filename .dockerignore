@@ -1,0 +1,9 @@
+.git
+.agents
+build*
+deploy
+doc
+tests/*
+!tests/*.cpp
+*.tar
+*.log

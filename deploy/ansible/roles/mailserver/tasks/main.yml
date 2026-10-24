@@ -1,0 +1,187 @@
+---
+- name: Require the reviewed platform and an explicit staging initialization boundary
+  ansible.builtin.assert:
+    that:
+    - ansible_facts.distribution == 'Debian'
+    - ansible_facts.distribution_major_version in ['12', '13']
+    - mailadmin_mode in ['existing', 'staging']
+    - not (mailadmin_initialize_staging | bool) or mailadmin_mode == 'staging'
+    - mailadmin_config_gid | int != mailadmin_gid | int
+    - mailadmin_package_state in ['present', 'latest']
+    - mailadmin_database_user is match('^[A-Za-z_][A-Za-z0-9_]*$')
+    - mailadmin_database_user not in ['root', 'mysql', 'mail', 'courier']
+- name: Require a library-generated database secret before changing the host
+  ansible.builtin.assert:
+    that:
+    - vault_mailadmin_database_password is defined
+    - vault_mailadmin_database_password is match('^[a-f0-9]{64}$')
+  no_log: true
+- name: Check requested mailbox UID is free or already Courier
+  ansible.builtin.getent:
+    database: passwd
+    key: '{{ mailadmin_uid }}'
+    fail_key: false
+- name: Validate mailbox UID
+  ansible.builtin.assert:
+    that: ansible_facts.getent_passwd.keys() | difference(['courier', mailadmin_uid | string]) | length
+      == 0
+- name: Check requested mailbox GID is free or already Courier
+  ansible.builtin.getent:
+    database: group
+    key: '{{ mailadmin_gid }}'
+    fail_key: false
+- name: Validate mailbox GID
+  ansible.builtin.assert:
+    that: ansible_facts.getent_group.keys() | difference(['courier', mailadmin_gid | string]) | length
+      == 0
+- name: Read any existing Courier user by name
+  ansible.builtin.getent:
+    database: passwd
+    key: courier
+    fail_key: false
+- name: Refuse to renumber an existing Courier user
+  ansible.builtin.assert:
+    that: ansible_facts.getent_passwd.courier is none or ansible_facts.getent_passwd.courier[1] | int == mailadmin_uid | int
+- name: Read any existing Courier group by name
+  ansible.builtin.getent:
+    database: group
+    key: courier
+    fail_key: false
+- name: Refuse to renumber an existing Courier group
+  ansible.builtin.assert:
+    that: ansible_facts.getent_group.courier is none or ansible_facts.getent_group.courier[1] | int == mailadmin_gid | int
+- name: Reserve the portable Courier group identity before package installation
+  ansible.builtin.group:
+    name: courier
+    gid: '{{ mailadmin_gid }}'
+    system: true
+- name: Reserve the portable Courier user identity
+  ansible.builtin.user:
+    name: courier
+    uid: '{{ mailadmin_uid }}'
+    group: courier
+    home: /var/lib/courier
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: true
+- name: Install mail server and deployment runtime packages
+  ansible.builtin.apt:
+    name:
+    - mariadb-server
+    - mariadb-client
+    - python3-pymysql
+    - courier-mta
+    - courier-imap
+    - courier-authdaemon
+    - courier-authlib-mysql
+    - maildrop
+    - spamassassin
+    - spamc
+    - docker.io
+    state: '{{ mailadmin_package_state }}'
+    update_cache: true
+    cache_valid_time: 3600
+- name: Start database and container engine
+  ansible.builtin.systemd_service:
+    name: '{{ item }}'
+    enabled: true
+    state: started
+  loop:
+  - mariadb
+  - docker
+- name: Read any existing administration group by name
+  ansible.builtin.getent:
+    database: group
+    key: '{{ mailadmin_config_group }}'
+    fail_key: false
+- name: Refuse to renumber an existing administration group
+  ansible.builtin.assert:
+    that: ansible_facts.getent_group[mailadmin_config_group] is none or ansible_facts.getent_group[mailadmin_config_group][1] | int == mailadmin_config_gid | int
+- name: Create the container-only administration group
+  ansible.builtin.group:
+    name: '{{ mailadmin_config_group }}'
+    gid: '{{ mailadmin_config_gid }}'
+    system: true
+- name: Read administration group membership
+  ansible.builtin.getent:
+    database: group
+    key: '{{ mailadmin_config_group }}'
+- name: Refuse to give host Courier the container administration group
+  ansible.builtin.assert:
+    that: '''courier'' not in ansible_facts.getent_group[mailadmin_config_group][2].split('','')'
+- name: Prepare configuration, isolated generated sources and persistent state
+  ansible.builtin.file:
+    path: '{{ item.path }}'
+    state: directory
+    owner: '{{ item.owner }}'
+    group: '{{ item.group }}'
+    mode: '{{ item.mode }}'
+  loop:
+  - path: /var/cache/mailadmin
+    owner: root
+    group: root
+    mode: '0700'
+  - path: /etc/mailadmin
+    owner: root
+    group: courier
+    mode: '0750'
+  - path: /etc/mailadmin/generated
+    owner: root
+    group: '{{ mailadmin_config_group }}'
+    mode: '2770'
+  - path: '{{ mailadmin_key_directory }}'
+    owner: root
+    group: courier
+    mode: '0750'
+  - path: '{{ mailadmin_state }}'
+    owner: courier
+    group: courier
+    mode: '0700'
+  - path: '{{ mailadmin_spool }}'
+    owner: courier
+    group: courier
+    mode: '0750'
+- name: Initialize only an explicitly selected staging database
+  ansible.builtin.include_tasks: staging.yml
+  when: mailadmin_initialize_staging | bool
+- name: Require a database secret supplied through Ansible Vault
+  ansible.builtin.assert:
+    that:
+    - vault_mailadmin_database_password is defined
+    - vault_mailadmin_database_password is match('^[a-f0-9]{64}$')
+  no_log: true
+- name: Create the daemon database login without DDL or grant privileges
+  ansible.mariadb.mariadb_user:
+    name: '{{ mailadmin_database_user }}'
+    host: localhost
+    password: '{{ vault_mailadmin_database_password }}'
+    priv: "mail.*:{{ 'SELECT,INSERT,UPDATE,DELETE' if mailadmin_administration | bool else 'SELECT' }}"
+    config_file: ''
+    login_unix_socket: '{{ mailadmin_database_socket }}'
+    state: present
+  no_log: true
+- name: Install the daemon configuration without exposing credentials
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: /etc/mailadmin/config.json
+    owner: root
+    group: '{{ mailadmin_config_group }}'
+    mode: '0640'
+  no_log: true
+  notify: Restart enabled inventory daemon
+- name: Install restricted Courier publication support
+  ansible.builtin.include_tasks: publication.yml
+- name: Check legacy verifier before moving its trust boundary
+  ansible.builtin.stat:
+    path: '{{ mailadmin_state }}/api-key.sha256'
+  register: mailadmin_legacy_key
+- name: Preserve an existing API key in the protected credential directory
+  ansible.builtin.copy:
+    src: '{{ mailadmin_state }}/api-key.sha256'
+    dest: '{{ mailadmin_key_directory }}/api-key.sha256'
+    remote_src: true
+    force: false
+    owner: root
+    group: courier
+    mode: '0640'
+  when: mailadmin_legacy_key.stat.exists

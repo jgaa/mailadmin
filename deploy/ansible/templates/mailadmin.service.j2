@@ -1,0 +1,16 @@
+[Unit]
+Description=Mailadmin administration API container
+Requires=docker.service
+After=docker.service mariadb.service network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f mailadmin
+ExecStart=/usr/bin/docker run --rm --name mailadmin --network host --read-only --cap-drop=ALL --security-opt=no-new-privileges --user {{ mailadmin_uid | default(107) }}:{{ mailadmin_gid | default(113) }} --group-add {{ mailadmin_config_gid | default(2107) }} --mount type=bind,src=/etc/mailadmin/config.json,dst=/etc/mailadmin/config.json,readonly --mount type=bind,src={{ mailadmin_key_directory | default('/etc/mailadmin/credentials') }},dst={{ mailadmin_key_directory | default('/etc/mailadmin/credentials') }},readonly --mount type=bind,src={{ mailadmin_state | default('/var/lib/mailadmin') }},dst={{ mailadmin_state | default('/var/lib/mailadmin') }} --mount type=bind,src=/run/mysqld,dst=/run/mysqld,readonly --mount type=bind,src={{ mailadmin_spool | default('/var/lib/courier/spool-virtusers') }},dst={{ mailadmin_spool | default('/var/lib/courier/spool-virtusers') }}{{ '' if mailadmin_administration | default(false) | bool else ',readonly' }} --mount type=bind,src=/etc/mailadmin/generated,dst=/etc/mailadmin/generated {{ mailadmin_image }} serve --config /etc/mailadmin/config.json
+ExecStop=/usr/bin/docker stop --time 30 mailadmin
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

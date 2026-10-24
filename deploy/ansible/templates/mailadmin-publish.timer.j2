@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry managed Courier configuration publication
+
+[Timer]
+OnBootSec=5s
+OnUnitInactiveSec=3s
+AccuracySec=1s
+Unit=mailadmin-publish.service
+
+[Install]
+WantedBy=timers.target

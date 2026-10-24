@@ -1,0 +1,92 @@
+---
+- name: Deploy or upgrade the inventory daemon container
+  hosts: mailservers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require a concrete image reference
+      ansible.builtin.assert:
+        that:
+          - mailadmin_image is defined
+          - mailadmin_image is match('^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$')
+    - name: Inspect previous image identity
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{{ "{{.Id}}" }}', '{{ mailadmin_image }}']
+      register: mailadmin_previous_image
+      failed_when: false
+      changed_when: false
+      check_mode: false
+    - name: Prepare a root-only image transfer directory
+      ansible.builtin.file:
+        path: /var/cache/mailadmin/images
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      when: mailadmin_image_archive | default('') | length > 0
+    - name: Copy controller-built image archive when supplied
+      ansible.builtin.copy:
+        src: "{{ mailadmin_image_archive }}"
+        dest: /var/cache/mailadmin/images/image.tar
+        owner: root
+        group: root
+        mode: '0600'
+      register: mailadmin_archive
+      when: mailadmin_image_archive | default('') | length > 0
+    - name: Load a changed image archive
+      ansible.builtin.command:
+        argv: [docker, load, --input, /var/cache/mailadmin/images/image.tar]
+      changed_when: true
+      when:
+        - mailadmin_image_archive | default('') | length > 0
+        - mailadmin_archive.changed or mailadmin_previous_image.rc != 0
+        - not ansible_check_mode
+    - name: Pull registry image when no archive is supplied
+      ansible.builtin.command:
+        argv: [docker, pull, '{{ mailadmin_image }}']
+      changed_when: false
+      when:
+        - mailadmin_image_archive | default('') | length == 0
+        - not ansible_check_mode
+    - name: Inspect deployed image identity
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{{ "{{.Id}}" }}', '{{ mailadmin_image }}']
+      register: mailadmin_new_image
+      changed_when: mailadmin_new_image.stdout != mailadmin_previous_image.stdout
+      when: not ansible_check_mode
+      notify: Restart mailadmin
+    - name: Install systemd container unit
+      ansible.builtin.template:
+        src: templates/mailadmin.service.j2
+        dest: /etc/systemd/system/mailadmin.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart mailadmin
+    - name: Check the CLI-created API key verifier
+      ansible.builtin.stat:
+        path: "{{ mailadmin_key_directory | default('/etc/mailadmin/credentials') }}/api-key.sha256"
+      register: mailadmin_key
+      when: mailadmin_start_service | default(false) | bool
+    - name: Require a provisioned verifier before starting
+      ansible.builtin.assert:
+        that:
+          - mailadmin_key.stat.exists
+          - mailadmin_key.stat.mode == '0640'
+          - mailadmin_key.stat.uid == 0
+      when: mailadmin_start_service | default(false) | bool
+    - name: Reload systemd unit definitions
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Start the explicitly enabled daemon
+      ansible.builtin.systemd_service:
+        name: mailadmin
+        enabled: true
+        state: started
+      when: mailadmin_start_service | default(false) | bool
+  handlers:
+    - name: Restart mailadmin
+      ansible.builtin.systemd_service:
+        name: mailadmin
+        state: restarted
+      when: mailadmin_start_service | default(false) | bool

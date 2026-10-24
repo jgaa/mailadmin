@@ -1,0 +1,33 @@
+---
+- name: Verify the staging API over its real HTTP listener
+  hosts: mailservers
+  become: true
+  gather_facts: false
+  vars:
+    mailadmin_test_key_file: /root/.config/mailadmin-staging/api-key
+  tasks:
+    - name: Prepare a protected verification directory
+      ansible.builtin.file:
+        path: /var/cache/mailadmin
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Install the read-only smoke checks
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../../tests/staging_smoke.py'
+        dest: /var/cache/mailadmin/staging_smoke.py
+        owner: root
+        group: root
+        mode: '0700'
+    - name: Exercise bearer authentication, errors, inventory, multiple domains and zero-count metrics
+      ansible.builtin.command:
+        argv:
+          - python3
+          - /var/cache/mailadmin/staging_smoke.py
+          - --url
+          - 'http://127.0.0.1:{{ mailadmin_port | default("8080") }}'
+          - --token-file
+          - '{{ mailadmin_test_key_file }}'
+          - --staging-fixture
+      changed_when: false

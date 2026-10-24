@@ -1,0 +1,14 @@
+---
+mailservers:
+  hosts:
+    staging:
+      ansible_host: staging
+      ansible_user: root
+      ansible_python_interpreter: /usr/bin/python3
+      mailadmin_mode: staging
+      mailadmin_initialize_staging: true
+      mailadmin_image: mailadmin:staging
+      mailadmin_image_archive: "{{ lookup('ansible.builtin.env', 'HOME') }}/.local/state/mailadmin/images/staging.tar"
+      mailadmin_start_service: true
+      mailadmin_administration: true
+      mailadmin_spam_cleanup_seconds: 5

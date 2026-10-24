@@ -1,0 +1,55 @@
+---
+- name: Install resumable administration schema after offline backup and InnoDB conversion
+  hosts: mailservers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require the offline migration boundary
+      ansible.builtin.assert:
+        that:
+          - mailadmin_writers_stopped | default(false) | bool
+          - mailadmin_image is defined
+          - mailadmin_image is match('^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$')
+        fail_msg: Back up the mail database, convert to InnoDB, and stop legacy/admin writers before setting mailadmin_writers_stopped=true.
+    - name: Prepare temporary migration configuration
+      ansible.builtin.tempfile:
+        state: file
+        path: /var/cache/mailadmin
+        prefix: migration-
+        suffix: .json
+      register: mailadmin_migration_config
+    - name: Run the image CLI with socket-authenticated database root, then remove its configuration
+      block:
+        - name: Write root-only migration configuration
+          ansible.builtin.copy:
+            content: "{{ {'key_file': '/etc/mailadmin/credentials/api-key.sha256', 'database_user': 'root', 'database_socket': mailadmin_database_socket | default('/run/mysqld/mysqld.sock')} | to_nice_json }}\n"
+            dest: '{{ mailadmin_migration_config.path }}'
+            owner: root
+            group: root
+            mode: '0600'
+        - name: Apply checked idempotent schema migration using the deployed image
+          ansible.builtin.command:
+            argv:
+              - docker
+              - run
+              - --rm
+              - --network=none
+              - --read-only
+              - --user=0:0
+              - --cap-drop=ALL
+              - --security-opt=no-new-privileges
+              - --mount
+              - 'type=bind,src={{ mailadmin_migration_config.path }},dst=/migration.json,readonly'
+              - --mount
+              - type=bind,src=/run/mysqld,dst=/run/mysqld,readonly
+              - '{{ mailadmin_image }}'
+              - schema
+              - migrate
+              - --config
+              - /migration.json
+          changed_when: true
+      always:
+        - name: Remove temporary migration configuration
+          ansible.builtin.file:
+            path: '{{ mailadmin_migration_config.path }}'
+            state: absent

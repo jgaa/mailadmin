@@ -1,0 +1,14 @@
+{{ {
+  'endpoint': mailadmin_endpoint,
+  'port': mailadmin_port | string,
+  'key_file': mailadmin_key_directory + '/api-key.sha256',
+  'database_socket': mailadmin_database_socket,
+  'database_name': 'mail',
+  'database_user': mailadmin_database_user,
+  'database_password': vault_mailadmin_database_password,
+  'log_level': mailadmin_log_level,
+  'administration': mailadmin_administration | bool,
+  'spool_root': mailadmin_spool,
+  'generated_directory': '/etc/mailadmin/generated',
+  'spam_cleanup_seconds': mailadmin_spam_cleanup_seconds | int
+} | to_nice_json }}

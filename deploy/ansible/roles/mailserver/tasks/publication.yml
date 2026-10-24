@@ -1,0 +1,36 @@
+---
+- name: Prepare protected helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+- name: Install the fixed-operation Courier publisher
+  ansible.builtin.copy:
+    src: '{{ playbook_dir }}/../host/mailadmin-publish.py'
+    dest: /usr/local/libexec/mailadmin-publish
+    owner: root
+    group: root
+    mode: '0755'
+- name: Install protected publisher settings
+  ansible.builtin.copy:
+    content: "{{ {'uid': mailadmin_uid | int, 'gid': mailadmin_gid | int, 'admin_gid': mailadmin_config_gid | int, 'generated_directory': '/etc/mailadmin/generated'} | to_nice_json }}\n"
+    dest: /etc/mailadmin/publisher.json
+    owner: root
+    group: root
+    mode: '0600'
+- name: Install publisher systemd units
+  ansible.builtin.template:
+    src: '{{ playbook_dir }}/templates/mailadmin-publish.{{ item }}.j2'
+    dest: '/etc/systemd/system/mailadmin-publish.{{ item }}'
+    owner: root
+    group: root
+    mode: '0644'
+  loop: [service, timer]
+- name: Enable publication only for an explicitly enabled administrator
+  ansible.builtin.systemd_service:
+    name: mailadmin-publish.timer
+    daemon_reload: true
+    enabled: '{{ mailadmin_administration | bool }}'
+    state: "{{ 'started' if mailadmin_administration | bool else 'stopped' }}"

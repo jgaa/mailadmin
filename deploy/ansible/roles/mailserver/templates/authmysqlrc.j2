@@ -1,0 +1,21 @@
+# Managed only on explicitly initialized staging hosts.
+MYSQL_SERVER localhost
+MYSQL_PORT 0
+MYSQL_OPT 0
+MYSQL_SOCKET {{ mailadmin_database_socket }}
+MYSQL_USERNAME {{ mailadmin_auth_database_user }}
+MYSQL_PASSWORD {{ vault_mailadmin_auth_database_password }}
+MYSQL_DATABASE mail
+MYSQL_USER_TABLE passwd
+MYSQL_CRYPT_PWFIELD crypt
+MYSQL_LOGIN_FIELD id
+MYSQL_UID_FIELD uid
+MYSQL_GID_FIELD gid
+MYSQL_HOME_FIELD home
+MYSQL_MAILDIR_FIELD maildir
+MYSQL_NAME_FIELD name
+MYSQL_QUOTA_FIELD quota
+MYSQL_WHERE_CLAUSE active = 'yes'
+MYSQL_CLEAR_PWFIELD clear
+MYSQL_SELECT_CLAUSE SELECT P.id,P.crypt,P.clear,P.uid,P.gid,P.home,P.maildir,P.quota,P.name FROM passwd P JOIN organization O ON P.organization_id=O.organization_id WHERE P.id=CONCAT('$(local_part)','@','$(domain)') AND P.active='yes' AND O.hosted_here='yes'
+##NAME: MARKER:0
