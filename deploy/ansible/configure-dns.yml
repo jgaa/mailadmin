@@ -1,0 +1,46 @@
+---
+- name: Configure nsblast for an already provisioned administration API
+  hosts: mailservers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Require the explicitly selected DNS API and credential source
+      ansible.builtin.assert:
+        that:
+          - mailadmin_nsblast_api_url is defined
+          - mailadmin_nsblast_api_url | length > 0
+          - mailadmin_nsblast_api_key_source is defined or vault_mailadmin_nsblast_api_key is defined
+    - name: Read the protected current API configuration
+      ansible.builtin.slurp:
+        src: /etc/mailadmin/config.json
+      register: mailadmin_current_configuration
+      no_log: true
+    - name: Read the configured protected DNS credential
+      ansible.builtin.slurp:
+        src: '{{ mailadmin_nsblast_api_key_source }}'
+      register: mailadmin_nsblast_source
+      when: vault_mailadmin_nsblast_api_key is not defined
+      no_log: true
+    - name: Install the container-only DNS key
+      ansible.builtin.copy:
+        content: "{{ vault_mailadmin_nsblast_api_key | default(mailadmin_nsblast_source.content | default('') | b64decode) | trim }}\n"
+        dest: "{{ mailadmin_key_directory | default('/etc/mailadmin/credentials') }}/nsblast.key"
+        owner: root
+        group: '{{ mailadmin_config_group | default("mailadmin-config") }}'
+        mode: '0640'
+      no_log: true
+      notify: Restart administration API
+    - name: Configure DNS without changing existing database or HTTP settings
+      ansible.builtin.copy:
+        content: "{{ (mailadmin_current_configuration.content | b64decode | from_json) | combine({'nsblast_api_url': mailadmin_nsblast_api_url, 'nsblast_api_key_file': (mailadmin_key_directory | default('/etc/mailadmin/credentials')) + '/nsblast.key', 'default_mail_hostname': mailadmin_default_mail_hostname | default(''), 'dns_default_configuration': mailadmin_dns_default_configuration | default({}), 'nsblast_mta_sts_https_ready': mailadmin_nsblast_mta_sts_https_ready | default(false) | bool}) | to_nice_json }}\n"
+        dest: /etc/mailadmin/config.json
+        owner: root
+        group: '{{ mailadmin_config_group | default("mailadmin-config") }}'
+        mode: '0640'
+      no_log: true
+      notify: Restart administration API
+  handlers:
+    - name: Restart administration API
+      ansible.builtin.systemd_service:
+        name: mailadmin
+        state: restarted

@@ -12,3 +12,14 @@ mailservers:
       mailadmin_start_service: true
       mailadmin_administration: true
       mailadmin_spam_cleanup_seconds: 5
+      mailadmin_ui_image: mailadmin-ui:staging
+      mailadmin_ui_image_archive: "{{ lookup('ansible.builtin.env', 'HOME') }}/.local/state/mailadmin/images/ui-staging.tar"
+      mailadmin_ui_api_url: http://127.0.0.1:8080
+      mailadmin_ui_api_key_source: /root/.config/mailadmin-staging/api-key
+      mailadmin_ui_address: 0.0.0.0
+      mailadmin_ui_port: 8081
+      mailadmin_nsblast_api_url: http://127.0.0.1:18080/api/v1
+      mailadmin_nsblast_api_key_source: /root/.config/nsblast-staging/mailadm-test-api-key
+      # Reuse the existing synthetic Courier fixture's inbound host.
+      # Set the real shared MX hostname in production inventory.
+      mailadmin_default_mail_hostname: mail.example.test

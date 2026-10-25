@@ -21,7 +21,7 @@ yahat::Response failure(int status, std::string code, std::string message, const
     auto response = json_response(status, boost::json::object{{"error", boost::json::object{
         {"code", std::move(code)}, {"message", std::move(message)}, {"request_id", request_id}}}}, request_id);
     if (status == 401) response.headers.set("WWW-Authenticate", "Bearer");
-    if (status == 405) response.headers.set("Allow", "GET, POST, PATCH, DELETE");
+    if (status == 405) response.headers.set("Allow", "GET, POST, PUT, PATCH, DELETE");
     return response;
 }
 

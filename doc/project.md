@@ -1,6 +1,6 @@
 # Mailadmin backend specification
 
-Status: backend administration implementation and staging validation, 2026-10-24.
+Status: backend administration, Wt CRUD and nsblast DNS integration, 2026-10-25.
 See sections 7–8 and the API/recovery runbooks for implementation boundaries.
 
 ## 1. Purpose and requirement status
@@ -54,11 +54,9 @@ This document distinguishes:
 - Local library copies may be inspected for research. At build time, download
   libraries compiled for this project from GitHub; do not depend on sibling
   checkouts or other local source overrides.
-- Automatic DNS configuration is a future feature. Defer implementation until
-  the owner's DNS server has the necessary REST API features; domain management
-  must work without that integration in the meantime.
-- Use [RESTinCurl](https://github.com/jgaa/RESTinCurl) for outgoing REST requests
-  when that integration is implemented.
+- Automatic DNS configuration uses the owner's nsblast mail provisioning API;
+  domain management also works with DNS disabled.
+- Use [RESTinCurl](https://github.com/jgaa/RESTinCurl) for outgoing REST requests.
 - Run in a container with filesystem access to Courier configuration and mail
   spool directories, under the same user as the mail server (`Agents.md`).
 - Configuration write access must use a dedicated administration group granted
@@ -655,13 +653,13 @@ status; unfinished requirements are not implied to be working endpoints.
 
 ### Automatic DNS provisioning
 
-Deferred until the owner adds the necessary features to the DNS server. No DNS
-client, background retries, provider framework or placeholder endpoints are
-required now. New domains must be manageable with DNS configured separately.
-The following are notes for the future integration, not current release work:
+The owner supplied the nsblast mail provisioning API on 2026-10-25. Integration
+uses RESTinCurl, explicit scoped credentials and the durable `admin_dns` table.
+See [DNS provisioning](dns.md) for the full contract, policy defaults, pending
+retirement and deployment. New domains use `default_mail_hostname` from service
+configuration; dedicated provisioning accepts explicitly supplied MX addresses.
+Existing domains are not automatically enrolled or overwritten.
 
-- Isolate DNS behind a provider interface using RESTinCurl. No provider URL,
-  authentication scheme, request payload or concrete endpoints are assumed.
 - Report DNS configuration outcomes separately from local Courier activation,
   including failures that need an administrator retry. Define when a domain is
   ready for use and whether propagation checking is needed. Start with a simple
@@ -670,9 +668,9 @@ The following are notes for the future integration, not current release work:
   reconcile ambiguous timeouts before repeating non-idempotent operations.
 - Change only records the service is authorized to manage. Store credentials
   outside responses/logs and validate TLS for outgoing requests.
-- Agree on the record set and values: MX, address records, SPF, DKIM and DMARC
-  are discussion candidates, not confirmed scope. DKIM additionally needs an
-  agreed signer/key lifecycle; DNS provisioning alone cannot supply that.
+- The nsblast contract supports MX, optional host addresses, SPF, DKIM public
+  selectors, DMARC, MTA-STS and TLS reporting. Signing/private keys and certificate
+  provisioning remain separate responsibilities.
 - Do not automatically reprovision DNS for existing domains during takeover.
   Automatic provisioning is required for new domains; modifying existing DNS
   requires an explicit administrator operation.
@@ -738,7 +736,7 @@ storage scans, mail-log parsers or queue/delivery statistics are in scope.
 - Build future verification around temporary spool/config roots, a test database
   and fake Courier activation commands. Cover inheritance, collisions, manual
   filter ownership, destructive path containment and cleanup recovery across
-  process restarts. DNS verification belongs to the deferred integration.
+  process restarts. DNS verification includes mocks and the authorized staging nsblast instance.
 - Legacy PHP pages, `.ins` exports, general Courier web administration, mailbox
   browsing, end-user access, alternate old POP login management, migration from
   other mail servers, new import tools, message transport and spam classification
@@ -769,7 +767,7 @@ for this specification.
 After collection, specify the minimal domain-table migration, CLI syntax/API
 payloads, supported password hash format, cleanup schedule, and rollback steps.
 Ownership, admin-only access, bearer authentication, count-only domain metrics,
-deferred DNS and durable cleanup are settled as described above.
+DNS provisioning and durable cleanup are settled as described above.
 
 ## 8. Administration implementation
 
@@ -778,7 +776,7 @@ forwarding and quotas, supplied/generated passwords, explicit plaintext conversi
 Maildir lifecycle, inherited filtering/spam policies, auto-replies, scheduled spam
 cleanup and persistent reconciliation. See [the API contract](api.md) and
 [administration/recovery runbook](administration.md) for implemented behavior,
-limits and rollout. DNS remains deferred; no MCP tools are added.
+limits and rollout. DNS uses the nsblast integration described above; no MCP tools are added.
 
 The explicit offline schema CLI requires InnoDB, validates legacy ownership and
 address conflicts, adds domain ownership and durable activation/cleanup tables,

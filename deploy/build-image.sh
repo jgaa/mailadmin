@@ -5,6 +5,11 @@ umask 077
 mailadmin_repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 mailadmin_image=${1:-mailadmin:staging}
 mailadmin_output=${2:-${XDG_STATE_HOME:-$HOME/.local/state}/mailadmin/images/staging.tar}
+mailadmin_dockerfile=${3:-Dockerfile}
+if [[ ! -f "$mailadmin_repo/$mailadmin_dockerfile" || "$mailadmin_dockerfile" == /* || "$mailadmin_dockerfile" == *..* ]]; then
+    printf '%s\n' 'Select a Dockerfile within the repository' >&2
+    exit 2
+fi
 if [[ "$mailadmin_image" == -* || "$mailadmin_image" == *[[:space:]]* ]]; then
     printf '%s\n' 'Invalid image reference' >&2
     exit 2
@@ -25,11 +30,11 @@ mailadmin_temporary=$(mktemp "${mailadmin_output}.XXXXXX")
 trap 'rm -f -- "$mailadmin_temporary"' EXIT
 case "$mailadmin_builder" in
     buildah)
-        buildah build --layers --force-rm --network slirp4netns --tag "$mailadmin_image" "$mailadmin_repo"
+        buildah build --layers --force-rm --network slirp4netns --file "$mailadmin_repo/$mailadmin_dockerfile" --tag "$mailadmin_image" "$mailadmin_repo"
         buildah push --quiet "$mailadmin_image" "docker-archive:${mailadmin_temporary}:${mailadmin_image}"
         ;;
     docker)
-        docker build --tag "$mailadmin_image" "$mailadmin_repo"
+        docker build --file "$mailadmin_repo/$mailadmin_dockerfile" --tag "$mailadmin_image" "$mailadmin_repo"
         docker save --output "$mailadmin_temporary" "$mailadmin_image"
         ;;
     *)

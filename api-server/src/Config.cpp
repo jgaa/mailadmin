@@ -3,6 +3,7 @@
 #include <set>
 #include <stdexcept>
 #include <sys/stat.h>
+#include "Dns.h"
 
 namespace mailadmin {
 Config read_config(const std::filesystem::path& path) {
@@ -22,7 +23,8 @@ Config read_config(const std::filesystem::path& path) {
         "endpoint", "port", "tls_key", "tls_cert", "key_file", "database_socket",
         "database_name", "database_user", "database_password", "log_level",
         "database_timeout_seconds", "database_workers", "max_pending_requests", "administration",
-        "spool_root", "generated_directory", "reconcile_seconds", "spam_cleanup_seconds"};
+        "spool_root", "generated_directory", "reconcile_seconds", "spam_cleanup_seconds",
+        "nsblast_api_url", "nsblast_api_key_file", "dns_default_configuration", "nsblast_mta_sts_https_ready", "default_mail_hostname"};
     for (const auto& member : object) {
         if (!names.contains(member.key())) throw std::runtime_error{"Unknown config field"};
     }
@@ -79,6 +81,26 @@ Config read_config(const std::filesystem::path& path) {
     config.generated_directory = string_field("generated_directory", config.generated_directory.string());
     config.reconcile_seconds = number_field("reconcile_seconds", 5, 300);
     config.spam_cleanup_seconds = number_field("spam_cleanup_seconds", 3600, 86400);
+    config.nsblast_api_url = string_field("nsblast_api_url");
+    config.default_mail_hostname = string_field("default_mail_hostname");
+    config.nsblast_api_key_file = string_field("nsblast_api_key_file");
+    if (const auto* ready = object.if_contains("nsblast_mta_sts_https_ready")) {
+        if (!ready->is_bool()) throw std::runtime_error{"MTA-STS readiness must be boolean"};
+        config.nsblast_mta_sts_https_ready = ready->as_bool();
+    }
+    if (const auto* value = object.if_contains("dns_default_configuration")) {
+        if (!value->is_object()) throw std::runtime_error{"DNS defaults must be a JSON object"};
+        config.dns_default_configuration = value->as_object();
+    }
+    if (!config.default_mail_hostname.empty()) {
+        config.default_mail_hostname = domain_name(config.default_mail_hostname);
+        if (!config.nsblast_api_url.empty() && !config.dns_default_configuration.contains("mail_servers")) {
+            auto defaults = dns_defaults(config);
+            for (auto& member : config.dns_default_configuration) defaults[member.key()] = member.value();
+            config.dns_default_configuration = std::move(defaults);
+        }
+    }
+    validate_dns_config(config);
     for (const auto& directory : {config.spool_root, config.generated_directory}) {
         if (!directory.is_absolute() || directory == "/" || directory.lexically_normal() != directory)
             throw std::runtime_error{"Administrative directories must be normalized absolute paths"};

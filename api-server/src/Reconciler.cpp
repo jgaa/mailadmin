@@ -1,6 +1,7 @@
 #include "Administration.h"
 #include "Mailstore.h"
 #include "Security.h"
+#include "Dns.h"
 #include "logging.h"
 #include <chrono>
 #include <unistd.h>
@@ -110,6 +111,7 @@ void reconcile(const Config& config, bool cleanup_spam) {
 }
 Reconciler::Reconciler(std::shared_ptr<const Config> config) : config_{std::move(config)} {
     if (!config_->administration) return;
+    if (!config_->nsblast_api_url.empty()) dns_ = std::make_unique<DnsWorker>(config_);
     thread_=std::thread{[this] {
         auto next_spam=std::chrono::steady_clock::now();
         bool first=true;
@@ -137,6 +139,7 @@ Reconciler::Reconciler(std::shared_ptr<const Config> config) : config_{std::move
 }
 Reconciler::~Reconciler() { stop(); }
 void Reconciler::stop() {
+    if (dns_) dns_->stop();
     { std::lock_guard guard{mutex_}; stopping_=true; }
     condition_.notify_all();
     if (thread_.joinable()) thread_.join();

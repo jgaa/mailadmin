@@ -1,0 +1,28 @@
+add_library(mailadmin_ui_data STATIC Data.cpp)
+target_include_directories(mailadmin_ui_data PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(mailadmin_ui_data PUBLIC Boost::json)
+target_compile_options(mailadmin_ui_data PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(mailadmin_ui main.cpp Application.cpp Forms.cpp Editor.cpp ApiClient.cpp Credentials.cpp Authentication.cpp)
+target_include_directories(mailadmin_ui PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/../generated")
+target_include_directories(mailadmin_ui SYSTEM PRIVATE "${restincurl_SOURCE_DIR}/include")
+target_compile_definitions(mailadmin_ui PRIVATE RESTINCURL_ENABLE_ASIO=1)
+target_link_libraries(mailadmin_ui PRIVATE mailadmin_ui_data wt wthttp
+    RESTinCurl::RESTinCurl Boost::program_options OpenSSL::Crypto logfault::logfault)
+target_compile_options(mailadmin_ui PRIVATE -Wall -Wextra -Wpedantic)
+install(TARGETS mailadmin_ui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(MAILADMIN_BUILD_TESTS)
+    add_executable(mailadmin_ui_data_test ../../tests/ui_data.cpp)
+    target_link_libraries(mailadmin_ui_data_test PRIVATE mailadmin_ui_data)
+    add_test(NAME ui_data COMMAND mailadmin_ui_data_test)
+    add_executable(mailadmin_ui_credentials_test ../../tests/ui_credentials.cpp Credentials.cpp)
+    target_include_directories(mailadmin_ui_credentials_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(mailadmin_ui_credentials_test PRIVATE OpenSSL::Crypto)
+    add_test(NAME ui_credentials COMMAND mailadmin_ui_credentials_test)
+    add_executable(mailadmin_ui_authentication_test ../../tests/ui_authentication.cpp Authentication.cpp)
+    target_include_directories(mailadmin_ui_authentication_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(mailadmin_ui_authentication_test PRIVATE OpenSSL::Crypto Boost::json)
+    add_test(NAME ui_authentication COMMAND mailadmin_ui_authentication_test)
+endif()

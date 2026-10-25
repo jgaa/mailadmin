@@ -1,0 +1,17 @@
+[Unit]
+Description=Mailadmin Wt mailbox browser container
+Requires=docker.service
+Wants=mailadmin.service
+After=docker.service mailadmin.service network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f mailadmin-ui
+ExecStart=/usr/bin/docker run --rm --name mailadmin-ui --network host --read-only --cap-drop=ALL --security-opt=no-new-privileges --user 65532:65532 --pids-limit 128 --memory 512m --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777 --mount type=bind,src=/var/lib/mailadmin-ui,dst=/var/lib/mailadmin-ui --mount type=bind,src=/etc/mailadmin-ui/credentials,dst=/run/secrets/mailadmin-ui,readonly {{ mailadmin_ui_image }} --api-url {{ mailadmin_ui_api_url | default('http://127.0.0.1:8080') }} --api-key-file /run/secrets/mailadmin-ui/api-key --http-address {{ mailadmin_ui_address | default('127.0.0.1') }} --http-port {{ mailadmin_ui_port | default(8081) }} --wt-config /usr/local/share/mailadmin-ui/wt_config.xml --docroot /var/www/mailadmin-ui --resources-dir /usr/local/share/mailadmin-ui/resources
+ExecStop=/usr/bin/docker stop --time 40 mailadmin-ui
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,5 @@
 #include "Administration.h"
+#include "Dns.h"
 #include "Security.h"
 #include "logging.h"
 #include <openssl/crypto.h>
@@ -204,6 +205,7 @@ void migrate_schema(const Config& config) {
     db.query("CREATE TABLE IF NOT EXISTS admin_account (passwd_id INT PRIMARY KEY, desired_active ENUM('yes','no') NOT NULL, CONSTRAINT mailadmin_account FOREIGN KEY(passwd_id) REFERENCES passwd(passwd_id) ON DELETE CASCADE) ENGINE=InnoDB");
     db.query("CREATE TABLE IF NOT EXISTS admin_retired_address (address VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY, generation BIGINT NOT NULL) ENGINE=InnoDB");
     db.query("CREATE TABLE IF NOT EXISTS admin_cleanup (passwd_id INT PRIMARY KEY, organization_id INT NOT NULL, home VARCHAR(255) NOT NULL, generation BIGINT NOT NULL, attempts INT NOT NULL DEFAULT 0, last_error VARCHAR(64) NOT NULL DEFAULT '') ENGINE=InnoDB");
+    migrate_dns(db);
     Transaction transaction{db};
     db.query("INSERT IGNORE INTO admin_state(singleton) VALUES(1)");
     for (const auto& [domain,owner] : domains) {
@@ -264,23 +266,38 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
     const auto remainder = target.substr(prefix.size());
     const auto slash = remainder.find('/');
     const auto resource = remainder.substr(0,slash);
-    const auto raw_id = slash == std::string::npos ? std::string{} : remainder.substr(slash+1);
+    auto raw_id = slash == std::string::npos ? std::string{} : remainder.substr(slash+1);
+    const bool dns_route = resource == "domains" && raw_id.ends_with("/dns");
+    if (dns_route) raw_id.resize(raw_id.size() - 4);
     if (raw_id.find('/') != std::string::npos || (slash != std::string::npos && raw_id.empty())) missing();
     const auto id = raw_id.empty() || resource == "domains" ? raw_id : numeric_path_id(raw_id);
     Connection db{*config};
     AdministrationLock lock{db};
-    if (method_type != Method::GET && db.query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND ENGINE='InnoDB' AND TABLE_NAME IN ('organization','passwd','alias','forward','domain','admin_account','admin_state','admin_cleanup','admin_retired_address')").at(0).at(0) != "9")
+    if (method_type != Method::GET && db.query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND ENGINE='InnoDB' AND TABLE_NAME IN ('organization','passwd','alias','forward','domain','admin_account','admin_state','admin_cleanup','admin_retired_address','admin_dns')").at(0).at(0) != "10")
         throw ApiError{409,"innodb_required","All administration tables must use InnoDB"};
+    DnsLocks dns_locks{db};
     Transaction transaction{db};
     Operation result;
     Object output;
     bool changed = method_type != Method::GET;
-    if (resource == "operations") {
+    if (dns_route) {
+        const auto domain = domain_name(id);
+        if (method_type == Method::GET) {
+            if (db.query("SELECT name FROM domain WHERE name=?", {domain}).empty() && db.query("SELECT domain FROM admin_dns WHERE domain=?", {domain}).empty()) missing();
+        } else {
+            method(method_type == Method::POST || method_type == Method::PUT || method_type == Method::DELETE);
+            if (db.query("SELECT name FROM domain WHERE name=?", {domain}).empty()
+                && db.query("SELECT domain FROM admin_dns WHERE domain=?", {domain}).empty()) missing();
+            queue_dns(db, dns_locks, *config, domain, method_type == Method::POST ? "POST" : method_type == Method::PUT ? "PUT" : "DELETE", input);
+        }
+        output["dns"] = dns_state(db, *config, domain);
+        changed = false; // DNS has its own durable revision, independent of Courier.
+    } else if (resource == "operations") {
         method(method_type == Method::GET && id.empty());
         boost::json::array cleanup;
         for (const auto& row : db.query("SELECT passwd_id,attempts,last_error FROM admin_cleanup ORDER BY passwd_id"))
             cleanup.emplace_back(Object{{"account_id",std::stoll(row[0])},{"attempts",std::stoi(row[1])},{"error",row[2]}});
-        output = {{"cleanup",std::move(cleanup)}};
+        output = {{"cleanup",std::move(cleanup)},{"dns",dns_jobs(db)}};
     } else if (resource == "reconcile") {
         method(method_type == Method::POST && id.empty());
         fields(input,{});
@@ -297,20 +314,25 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
             exists(db,"organization",id);
             if (!db.query("SELECT passwd_id FROM passwd WHERE organization_id=? LIMIT 1",{id}).empty())
                 throw ApiError{409,"organization_not_empty","Delete the organization's accounts first"};
+            for (const auto& owned : db.query("SELECT name FROM domain WHERE organization_id=?", {id}))
+                dns_removed(db, dns_locks, *config, owned[0]);
             db.query("DELETE FROM domain WHERE organization_id=?",{id});
             db.query("DELETE FROM organization WHERE organization_id=?",{id});
             output["deleted"] = true;
         } else {
             method((method_type == Method::POST && id.empty()) || (method_type == Method::PATCH && !id.empty()));
             fields(input,{"name","default_domain","inbound_mailserver","outbound_mailserver","hosted",
-                "filter_enabled","spam_enabled","spam_folder","spam_retention_days","spam_trash"});
+                "filter_enabled","spam_enabled","spam_folder","spam_retention_days","spam_trash","dns","provision_dns","mail_server"});
+            if (!id.empty() && (input.contains("dns") || input.contains("provision_dns") || input.contains("mail_server"))) invalid("Configure existing domain DNS through its DNS endpoint");
             auto organization_id = id;
             if (id.empty()) {
                 auto domain = domain_name(text(input,"default_domain",253));
+                dns_available_name(db, domain);
                 db.query("INSERT INTO organization(name,default_domain,inbound_mailserver,outbound_mailserver) VALUES(?,?,?,?)",
                     {text(input,"name",50),domain,"",""});
                 organization_id = db.query("SELECT LAST_INSERT_ID()")[0][0];
                 db.query("INSERT INTO domain(name,organization_id) VALUES(?,?)",{domain,organization_id});
+                dns_created(db, dns_locks, *config, domain, input);
                 result.status = 201;
             } else exists(db,"organization",id);
             if (input.contains("name")) db.query("UPDATE organization SET name=? WHERE organization_id=?",{text(input,"name",50),organization_id});
@@ -345,17 +367,22 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
                     domain.empty() ? Parameters{} : Parameters{domain}))
                 items.emplace_back(Object{{"domain",row[0]},{"organization_id",std::stoll(row[1])}});
             if (domain.empty()) output["domains"] = std::move(items);
-            else output["domain"] = std::move(items[0]);
+            else {
+                output["domain"] = std::move(items[0]);
+                output["dns"] = dns_state(db, *config, domain);
+            }
         } else if (method_type == Method::POST || method_type == Method::PATCH) {
             method((method_type == Method::POST && domain.empty()) || (method_type == Method::PATCH && !domain.empty()));
-            fields(input,domain.empty() ? std::initializer_list<std::string_view>{"domain","organization_id"}
+            fields(input,domain.empty() ? std::initializer_list<std::string_view>{"domain","organization_id","dns","provision_dns","mail_server"}
                                       : std::initializer_list<std::string_view>{"organization_id"});
             if (!input.contains("organization_id")) invalid("organization_id is required");
             const auto owner = std::to_string(number(input.at("organization_id")));
             exists(db,"organization",owner);
             const auto name = domain.empty() ? domain_name(text(input,"domain",253)) : domain;
             if (domain.empty()) {
+                dns_available_name(db, name);
                 db.query("INSERT INTO domain(name,organization_id) VALUES(?,?)",{name,owner});
+                dns_created(db, dns_locks, *config, name, input);
                 result.status = 201;
             } else {
                 if (!db.query("SELECT passwd_id FROM passwd WHERE SUBSTRING_INDEX(id,'@',-1)=? LIMIT 1",{name}).empty()
@@ -371,6 +398,7 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
                 || !db.query("SELECT alias_id FROM alias WHERE SUBSTRING_INDEX(mailaddr,'@',-1)=? LIMIT 1",{domain}).empty()
                 || !db.query("SELECT organization_id FROM organization WHERE default_domain=? LIMIT 1",{domain}).empty())
                 throw ApiError{409,"domain_in_use","Remove domain addresses and change its default-domain reference first"};
+            dns_removed(db, dns_locks, *config, domain);
             db.query("DELETE FROM domain WHERE name=?",{domain});
             output["deleted"] = true;
         }

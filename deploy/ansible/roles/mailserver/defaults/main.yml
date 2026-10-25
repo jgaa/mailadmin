@@ -19,3 +19,7 @@ mailadmin_administration: false
 mailadmin_key_directory: /etc/mailadmin/credentials
 mailadmin_auth_database_user: mailadmin_courier
 mailadmin_spam_cleanup_seconds: 3600
+mailadmin_nsblast_api_url: ""
+mailadmin_default_mail_hostname: ""
+mailadmin_dns_default_configuration: {}
+mailadmin_nsblast_mta_sts_https_ready: false

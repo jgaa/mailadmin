@@ -160,6 +160,30 @@
     login_unix_socket: '{{ mailadmin_database_socket }}'
     state: present
   no_log: true
+- name: Require a DNS credential source when provisioning is enabled
+  ansible.builtin.assert:
+    that:
+      - vault_mailadmin_nsblast_api_key is defined or mailadmin_nsblast_api_key_source is defined
+  when: mailadmin_nsblast_api_url | length > 0
+  no_log: true
+- name: Read an explicitly configured root-only host DNS credential
+  ansible.builtin.slurp:
+    src: '{{ mailadmin_nsblast_api_key_source }}'
+  register: mailadmin_nsblast_source
+  when:
+    - mailadmin_nsblast_api_url | length > 0
+    - vault_mailadmin_nsblast_api_key is not defined
+  no_log: true
+- name: Install the container-only DNS credential
+  ansible.builtin.copy:
+    content: "{{ vault_mailadmin_nsblast_api_key | default(mailadmin_nsblast_source.content | default('') | b64decode) | trim }}\n"
+    dest: '{{ mailadmin_key_directory }}/nsblast.key'
+    owner: root
+    group: '{{ mailadmin_config_group }}'
+    mode: '0640'
+  when: mailadmin_nsblast_api_url | length > 0
+  no_log: true
+  notify: Restart enabled inventory daemon
 - name: Install the daemon configuration without exposing credentials
   ansible.builtin.template:
     src: config.json.j2

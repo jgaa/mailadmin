@@ -7,8 +7,11 @@ on:
       - CMakeLists.txt
       - Dockerfile
       - .dockerignore
-      - src/**
-      - tests/*.cpp
+      - api-server/**
+      - tests/security.cpp
+      - tests/async.cpp
+      - tests/mailstore.cpp
+      - tests/dns.cpp
       - .github/workflows/container.yml
       - '!**/*.md'
   workflow_dispatch:

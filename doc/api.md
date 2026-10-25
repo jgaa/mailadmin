@@ -19,6 +19,7 @@ Administration requires the explicit configuration flag and schema migration in
 | `/api/v1/organizations/{id}` | GET, PATCH, DELETE | Full policy/details / deletion |
 | `/api/v1/domains` | GET, POST | Domain inventory/counts / created domain |
 | `/api/v1/domains/{domain}` | GET, PATCH, DELETE | Domain owner / deletion |
+| `/api/v1/domains/{domain}/dns` | GET, POST, PUT, DELETE | Durable DNS intent, state and reports |
 | `/api/v1/accounts` | GET, POST | Accounts / created account |
 | `/api/v1/accounts/{id}` | GET, PATCH, DELETE | Account / deletion |
 | `/api/v1/aliases` | GET, POST | Aliases / created alias |
@@ -41,7 +42,9 @@ pre-authentication request-filter errors using its own dispatch policy.
 
 Create an organization with `name` and `default_domain`; that domain is created
 and owned atomically. Optional fields are `hosted`, `inbound_mailserver`,
-`outbound_mailserver`, and the five policy fields below. Patch changes only
+`outbound_mailserver`, and the five policy fields below. Creation also supports
+`provision_dns`, a complete `dns` configuration, or dedicated `mail_server` input
+as described in [DNS provisioning](dns.md). Patch changes only
 provided fields. A new default domain must already belong to that organization.
 Organization deletion requires all accounts removed; its empty domains are then
 removed together. Domain creation uses `domain` and `organization_id`. Patch can
@@ -56,7 +59,8 @@ organization. `forwards` replaces the complete list of up to 32 destination
 addresses. `auto_reply=""` disables replies. Quota examples: `10000000S`,
 `10000000S,1000C`, or `""` for no limit. Alias create/patch uses `address` and
 `account_id`; the alias domain must belong to the target account's organization.
-Primary and alias addresses share one namespace enforced by the serialized API.
+Domain creation supports the same DNS options. Primary and alias addresses share
+one namespace enforced by the serialized API.
 Alias chains, catch-alls and distribution lists are not part of this API.
 
 A new account without a password generates one by default. Supply `password` or

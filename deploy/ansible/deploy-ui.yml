@@ -1,0 +1,129 @@
+---
+- name: Deploy the controller-built Wt UI container
+  hosts: mailservers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Validate UI deployment settings
+      ansible.builtin.assert:
+        that:
+          - mailadmin_ui_image is defined
+          - mailadmin_ui_image is match('^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$')
+          - mailadmin_ui_address | default('127.0.0.1') is match('^[0-9a-fA-F:.]+$')
+          - mailadmin_ui_port | default(8081) | int > 0
+          - mailadmin_ui_port | default(8081) | int < 65536
+          - mailadmin_ui_api_url | default('http://127.0.0.1:8080') is match('^https?://[a-zA-Z0-9.:-]+/?$')
+    - name: Require a sysop-provided API credential source
+      ansible.builtin.assert:
+        that:
+          - mailadmin_ui_api_key_source is defined or vault_mailadmin_ui_api_key is defined
+      no_log: true
+    - name: Prepare persistent UI authentication storage
+      ansible.builtin.file:
+        path: /var/lib/mailadmin-ui
+        state: directory
+        owner: '65532'
+        group: '65532'
+        mode: '0700'
+    - name: Prepare protected UI credentials
+      ansible.builtin.file:
+        path: /etc/mailadmin-ui/credentials
+        state: directory
+        owner: root
+        group: '65532'
+        mode: '0750'
+    - name: Install the UI API key from a protected host file
+      ansible.builtin.copy:
+        src: '{{ mailadmin_ui_api_key_source }}'
+        remote_src: true
+        dest: /etc/mailadmin-ui/credentials/api-key
+        owner: root
+        group: '65532'
+        mode: '0440'
+      when: vault_mailadmin_ui_api_key is not defined
+      no_log: true
+      notify: Restart mailadmin UI
+    - name: Install the UI API key from Vault
+      ansible.builtin.copy:
+        content: "{{ vault_mailadmin_ui_api_key }}\n"
+        dest: /etc/mailadmin-ui/credentials/api-key
+        owner: root
+        group: '65532'
+        mode: '0440'
+      when: vault_mailadmin_ui_api_key is defined
+      no_log: true
+      notify: Restart mailadmin UI
+    - name: Inspect previous UI image identity
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{{ "{{.Id}}" }}', '{{ mailadmin_ui_image }}']
+      register: mailadmin_ui_previous_image
+      failed_when: false
+      changed_when: false
+      check_mode: false
+    - name: Prepare a root-only image transfer directory
+      ansible.builtin.file:
+        path: /var/cache/mailadmin/images
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+      when: mailadmin_ui_image_archive | default('') | length > 0
+    - name: Copy controller-built UI image
+      ansible.builtin.copy:
+        src: "{{ mailadmin_ui_image_archive }}"
+        dest: /var/cache/mailadmin/images/ui-image.tar
+        owner: root
+        group: root
+        mode: '0600'
+      register: mailadmin_ui_archive
+      when: mailadmin_ui_image_archive | default('') | length > 0
+    - name: Load a changed UI image archive
+      ansible.builtin.command:
+        argv: [docker, load, --input, /var/cache/mailadmin/images/ui-image.tar]
+      changed_when: true
+      when:
+        - mailadmin_ui_image_archive | default('') | length > 0
+        - mailadmin_ui_archive.changed or mailadmin_ui_previous_image.rc != 0
+        - not ansible_check_mode
+    - name: Pull UI image when no controller archive is supplied
+      ansible.builtin.command:
+        argv: [docker, pull, '{{ mailadmin_ui_image }}']
+      changed_when: false
+      when:
+        - mailadmin_ui_image_archive | default('') | length == 0
+        - not ansible_check_mode
+    - name: Inspect deployed UI image identity
+      ansible.builtin.command:
+        argv: [docker, image, inspect, --format, '{{ "{{.Id}}" }}', '{{ mailadmin_ui_image }}']
+      register: mailadmin_ui_new_image
+      changed_when: mailadmin_ui_new_image.stdout != mailadmin_ui_previous_image.stdout
+      when: not ansible_check_mode
+      notify: Restart mailadmin UI
+    - name: Install UI container systemd unit
+      ansible.builtin.template:
+        src: templates/mailadmin-ui.service.j2
+        dest: /etc/systemd/system/mailadmin-ui.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart mailadmin UI
+    - name: Reload systemd unit definitions
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+    - name: Enable and start the UI
+      ansible.builtin.systemd_service:
+        name: mailadmin-ui
+        enabled: true
+        state: started
+    - name: Apply UI upgrades before checking its listener
+      ansible.builtin.meta: flush_handlers
+    - name: Wait for the UI HTTP listener
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ mailadmin_ui_port | default(8081) }}"
+        timeout: 30
+  handlers:
+    - name: Restart mailadmin UI
+      ansible.builtin.systemd_service:
+        name: mailadmin-ui
+        state: restarted

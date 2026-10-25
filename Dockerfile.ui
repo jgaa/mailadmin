@@ -1,0 +1,42 @@
+FROM debian:13 AS build
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    build-essential cmake git ca-certificates pkg-config \
+    libboost-program-options-dev libboost-json-dev libboost-thread-dev \
+    libboost-filesystem-dev libssl-dev libcurl4-openssl-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY CMakeLists.txt ./
+COPY ui-server/CMakeLists.txt ui-server/CMakeLists.txt
+RUN cmake -S . -B /build -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DMAILADMIN_BUILD_API=OFF -DMAILADMIN_BUILD_UI=ON -DMAILADMIN_BUILD_TESTS=ON \
+    -DMAILADMIN_UI_DEPENDENCIES_ONLY=ON \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=/usr/local/lib \
+    && cmake --build /build --target wt wthttp --parallel 8
+COPY ui-server/ ui-server/
+COPY tests/ui_data.cpp tests/ui_credentials.cpp tests/ui_authentication.cpp tests/
+RUN cmake -S . -B /build -DMAILADMIN_UI_DEPENDENCIES_ONLY=OFF \
+    && cmake --build /build --target mailadmin_ui mailadmin_ui_data_test mailadmin_ui_credentials_test mailadmin_ui_authentication_test --parallel 8 \
+    && ctest --test-dir /build --output-on-failure
+# Keep the runtime artifact limited to the executable, Wt libraries/resources
+# and configuration. No headers, test executables, static libraries or SDKs.
+RUN mkdir -p /artifact/lib /artifact/share/resources /artifact/public \
+    && cp /build/ui-server/src/mailadmin_ui /artifact/ \
+    && find /build/_deps/wt-build -name 'libwt.so*' -exec cp -a '{}' /artifact/lib/ \; \
+    && find /build/_deps/wt-build -name 'libwthttp.so*' -exec cp -a '{}' /artifact/lib/ \; \
+    && cp -a /build/_deps/wt-src/resources/. /artifact/share/resources/ \
+    && cp /build/ui-server/wt_config.xml /artifact/share/
+
+FROM debian:13-slim
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    ca-certificates libboost-program-options1.83.0 libboost-json1.83.0 \
+    libboost-thread1.83.0 libboost-filesystem1.83.0 libcurl4t64 libssl3t64 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /artifact/mailadmin_ui /usr/local/bin/mailadmin_ui
+COPY --from=build /artifact/lib/ /usr/local/lib/
+COPY --from=build /artifact/share/ /usr/local/share/mailadmin-ui/
+COPY --from=build /artifact/public/ /var/www/mailadmin-ui/
+RUN install -d -o 65532 -g 65532 -m 0700 /var/lib/mailadmin-ui && ldconfig && /usr/local/bin/mailadmin_ui --version
+USER 65532:65532
+EXPOSE 8081
+ENTRYPOINT ["/usr/local/bin/mailadmin_ui"]
+CMD ["--wt-config", "/usr/local/share/mailadmin-ui/wt_config.xml", "--docroot", "/var/www/mailadmin-ui", "--resources-dir", "/usr/local/share/mailadmin-ui/resources"]

@@ -20,6 +20,11 @@ struct Config {
     std::filesystem::path generated_directory = "/etc/mailadmin/generated";
     unsigned reconcile_seconds = 5;
     unsigned spam_cleanup_seconds = 3600;
+    std::string nsblast_api_url;
+    std::string default_mail_hostname;
+    std::filesystem::path nsblast_api_key_file;
+    boost::json::object dns_default_configuration;
+    bool nsblast_mta_sts_https_ready = false;
 };
 Config read_config(const std::filesystem::path& path);
 }

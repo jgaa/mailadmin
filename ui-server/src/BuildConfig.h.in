@@ -1,0 +1,5 @@
+#pragma once
+#define MAILADMIN_UI_VERSION "@mailadmin_VERSION@"
+#define MAILADMIN_UI_WT_CONFIG "@CMAKE_CURRENT_BINARY_DIR@/wt_config.xml"
+#define MAILADMIN_UI_DOCROOT "@CMAKE_CURRENT_BINARY_DIR@/public"
+#define MAILADMIN_UI_RESOURCES "@wt_SOURCE_DIR@/resources"

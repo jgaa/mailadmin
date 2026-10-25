@@ -253,3 +253,48 @@ run it as root with `--mail-protocols`. It reads the protected key file, creates
 only synthetic `.test` domains/accounts, and removes its own records afterward.
 Never run it against production. Runtime/SMTP/IMAP exceptions and response bodies
 are suppressed because they may contain credentials.
+
+## Deploy the Wt UI
+
+Build the separate UI image on the controller and load it onto staging:
+
+```bash
+./deploy/build-image.sh mailadmin-ui:staging \
+  "$HOME/.local/state/mailadmin/images/ui-staging.tar" Dockerfile.ui
+ansible-playbook -i deploy/ansible/inventory.staging.yml deploy/ansible/deploy-ui.yml \
+  --limit staging
+```
+
+This installs `mailadmin-ui.service` and starts an unprivileged container with a
+read-only API-key mount and writable UI authentication state, without database/Courier access. Staging exposes the UI over HTTP on port
+8081 and connects to the unchanged API over loopback HTTP on port 8080. Open
+`http://192.168.1.199:8081` and sign in as `admin` with the UI password stored in
+`/var/lib/mailadmin-ui/initial-password` (0600). Configure the backend key using
+`mailadmin_ui_api_key_source` or `vault_mailadmin_ui_api_key`; it is never entered
+in the browser or included in the unit/image. See the UI guide for password rotation. Repeat deployments
+restart only the UI when its image or unit changes. See the [UI guide](../../doc/ui.md)
+for browser checks with JavaScript enabled and disabled.
+
+## Enable nsblast DNS provisioning
+
+Use the upgraded API image and explicit schema migration before enabling DNS.
+Configure `mailadmin_nsblast_api_url`, a scoped credential through
+`vault_mailadmin_nsblast_api_key` or root-only `mailadmin_nsblast_api_key_source`,
+and `mailadmin_default_mail_hostname`. Optional policy overrides go in
+`mailadmin_dns_default_configuration`. Enabling MTA-STS additionally requires
+`mailadmin_nsblast_mta_sts_https_ready` after trusted HTTPS delivery is configured.
+
+For an existing provisioned host, `configure-dns.yml` preserves its database and
+listener settings and installs the credential with container-only read access:
+
+```bash
+ansible-playbook -i deploy/ansible/inventory.staging.yml deploy/ansible/configure-dns.yml \
+  --limit staging
+```
+
+Staging uses the loopback nsblast mail-test service and its existing scoped key.
+The shared hostname reuses the synthetic `mail.example.test` fixture; supply the
+real MX hostname in production inventory. The UI supports dedicated host addresses
+as an explicit alternative. See [DNS provisioning](../../doc/dns.md) for defaults,
+RFC rationale, retry/retirement behavior and verification. DNS deletion preserves
+host addresses and unrelated records. No existing zones are created or removed.

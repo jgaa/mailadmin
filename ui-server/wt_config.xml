@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<server>
+  <application-settings location="*">
+    <session-management>
+      <tracking>Combined</tracking>
+      <timeout>900</timeout>
+    </session-management>
+    <progressive-bootstrap>true</progressive-bootstrap>
+    <session-id-length>32</session-id-length>
+    <log-config>* -debug -info</log-config>
+    <http-headers>
+      <header name="Cache-Control" content="no-store" />
+      <header name="Referrer-Policy" content="no-referrer" />
+      <header name="X-Content-Type-Options" content="nosniff" />
+      <header name="X-Frame-Options" content="DENY" />
+    </http-headers>
+  </application-settings>
+</server>

@@ -10,5 +10,10 @@
   'administration': mailadmin_administration | bool,
   'spool_root': mailadmin_spool,
   'generated_directory': '/etc/mailadmin/generated',
-  'spam_cleanup_seconds': mailadmin_spam_cleanup_seconds | int
+  'spam_cleanup_seconds': mailadmin_spam_cleanup_seconds | int,
+  'nsblast_api_url': mailadmin_nsblast_api_url,
+  'nsblast_api_key_file': (mailadmin_key_directory + '/nsblast.key') if mailadmin_nsblast_api_url else '',
+  'default_mail_hostname': mailadmin_default_mail_hostname,
+  'dns_default_configuration': mailadmin_dns_default_configuration,
+  'nsblast_mta_sts_https_ready': mailadmin_nsblast_mta_sts_https_ready | bool
 } | to_nice_json }}

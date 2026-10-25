@@ -5,7 +5,7 @@ has not been contacted or changed. Containers are built on the controller with
 rootless Buildah and loaded onto staging. No image is built on the mailserver.
 The GitHub Actions container workflow remains available for future main pushes.
 
-The service runs as Courier UID/GID 107:113 with container-only supplementary
+The API service runs as Courier UID/GID 107:113 with container-only supplementary
 GID 2107. It listens on `127.0.0.1:8080`, with bearer authentication on every
 route including metrics. Administration is enabled. The synthetic legacy tables
 use InnoDB; explicit domain ownership and administrative journal tables have been
@@ -13,6 +13,23 @@ migrated using the image CLI. The original fixture is two disabled accounts,
 one alias, and three domains across two organizations. Tests create additional
 synthetic `.test` records and clean them up afterward. No production mail data
 is copied here.
+
+The separate Wt UI container runs as UID/GID 65532:65532, with a read-only API-key
+mount, persistent UI authentication state, a read-only root filesystem, dropped capabilities and a temporary `/tmp`. Its
+`mailadmin-ui.service` is enabled on boot. Open **http://192.168.1.199:8081** and
+sign in as `admin` using the UI password in
+`/var/lib/mailadmin-ui/initial-password` (0600). The UI uses HTTP to consume
+the API at `http://127.0.0.1:8080`; the API remains bound to loopback. Both HTTP
+transports are intentional for staging. Installing the UI did not restart or
+replace the API container or Courier.
+
+`Dockerfile.ui` builds Wt and the application on the controller and runs the
+`ui_data`, `ui_credentials` and `ui_authentication` CTests before producing the runtime image. The locally built image is
+exported to `~/.local/state/mailadmin/images/ui-staging.tar` and deployed with
+`deploy/ansible/deploy-ui.yml`. Repeat deployment was checked with zero changes.
+The separate GitHub Actions UI workflow builds/publishes a `-ui` image using the
+existing `MY_PAT` secret when relevant changes reach main; no workflow has been
+published or run as part of this local deployment.
 
 ## Credential and configuration boundary
 
@@ -35,14 +52,53 @@ is copied here.
 
 ## Executed checks
 
-Local container CTest passes all three groups: key-file security, actual Asio
-suspension/exception propagation, and Maildir/password regressions. The Maildir
+Local API container CTest passes four groups: key-file security, actual Asio
+suspension/exception propagation, Maildir/password regressions, and DNS
+defaults/public-key boundaries. The Maildir
 checks cover repeated provisioning, symlink containment, idempotent removal,
 atomic spam movement, explicit spam deletion, quota-cache invalidation and
 salted Courier-compatible password hashes. Seven Python tests validate the
 privileged publisher's untrusted input boundary and successful/failed rebuild
 acknowledgements. Ansible syntax checks and the
 container workflow's actionlint check pass.
+
+The UI's container CTest passes its API-contract/ownership/inheritance checks.
+`tests/staging_ui.py` passed in Chromium with JavaScript enabled and disabled,
+using the real staging API: authenticated tree loading (including empty domains),
+mailbox selection and configuration, alias isolation, inherited policies,
+mailbox/tree refresh, sign-out and rejected-password behavior. API keys are absent
+from rendered authenticated pages and from both services' journals. The API's
+ordinary read-only smoke test also passed after the UI deployment. See the
+[UI guide](ui.md) for repeatable build, deployment and browser-test commands.
+
+The UI now provides explicit Save/Cancel CRUD for organizations, domains,
+mailboxes, forwarding and aliases, plus password actions and policy overrides.
+`tests/staging_ui_crud.py` passed with JavaScript enabled and disabled, including
+cancel without a mutation, ownership changes, generated passwords, mailbox
+properties, forwarding list changes, alias rename/retargeting and deletion.
+Dedicated host DNS provisioning and a complete DMARC policy replacement passed
+against the authorized nsblast mail-test instance.
+
+DNS uses `http://127.0.0.1:18080/api/v1`, a key scoped to `mailtest-cycle.test`,
+and configurable `default_mail_hostname` (`mail.example.test` for the existing
+synthetic fixture). A protected database backup preceded the additive `admin_dns`
+schema migration. API and UI containers were built locally and deployed; nsblast
+was not reconfigured. The credential is root:mailadmin-config 0640 and was checked
+to be unreadable by host Courier. Existing API/DB/DNS secrets were absent from
+both administration services' journals.
+
+`tests/staging_dns.py` passed using an isolated database/API container and a mock
+provider, covering invalid-input atomicity, pending polling, unknown POST outcomes,
+restart/retry, terminal errors, superseded transitions, bounded polling and
+deletion ordering. Temporary test DB/users/containers are removed. Live browser
+tests remove their mailboxes/domains; dedicated host address records are retained
+by the intentional preserve-IP policy. No production DNS or mail data was used.
+Ownership regression checks also passed: a failed create conflict does not claim
+or automatically delete pre-existing DNS, unknown creates block destructive
+implicit cleanup, conflicting create-only changes preserve pending tracking,
+invalid deletion acknowledgements retain ownership, and deleted-domain DNS can
+be explicitly repaired through Operations. Backfill runs on every migration
+invocation so it can recover after an interrupted column addition.
 
 `tests/staging_business.py --mail-protocols` has passed against the running VM:
 

@@ -5,6 +5,7 @@
 #include <thread>
 
 namespace mailadmin {
+class DnsWorker;
 struct Operation {
     int status = 200;
     boost::json::value body;
@@ -25,6 +26,7 @@ private:
     std::condition_variable condition_;
     bool stopping_ = false;
     std::thread thread_;
+    std::unique_ptr<DnsWorker> dns_;
 };
 void quota_value(std::string_view quota);
 std::string mailbox_address(std::string value);
