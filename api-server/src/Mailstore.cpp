@@ -1,6 +1,7 @@
 #include "Mailstore.h"
 #include "Administration.h"
 #include "Security.h"
+#include "SpamPolicy.h"
 #include "ReconciliationDiagnostics.h"
 #include <cerrno>
 #include <ctime>
@@ -81,7 +82,17 @@ void quota(int messages, const std::string& definition) {
 void maildir(int parent, const std::string& name, bool folder=false) {
     auto fd=child(parent,name,true);
     for (const auto& part : {"tmp","new","cur"}) { auto sub=child(fd.value,part,true); sync_directory(sub.value); }
-    if (folder) atomic_write(fd.value,"maildirfolder","");
+    if (folder) {
+        // Create missing metadata without replacing an existing legacy marker.
+        const int marker=openat(fd.value,"maildirfolder",O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+        if (marker>=0) { Fd file{marker}; if (fsync(file.value)) filesystem_error(); }
+        else {
+            if (errno!=EEXIST) filesystem_error();
+            struct stat info{};
+            if (fstatat(fd.value,"maildirfolder",&info,AT_SYMLINK_NOFOLLOW) || !S_ISREG(info.st_mode)
+                || info.st_uid!=geteuid() || (info.st_mode&0022)) filesystem_error();
+        }
+    }
     sync_directory(fd.value);
     sync_directory(parent);
 }
@@ -131,10 +142,12 @@ void erase_tree(int parent, const std::string& name, unsigned depth, std::size_t
 }
 }
 std::string render_filter(const MailboxPlan& mailbox) {
+    const auto spam=resolve_spam_policy({mailbox.spam,mailbox.spam_folder,
+        std::to_string(mailbox.retention_days),mailbox.spam_trash});
     const auto address=mailbox_address(mailbox.address);
     std::string result="# Managed by mailadmin; administrator-owned delivery policy\n";
     result+="SHELL='/bin/sh'\nSENDMAIL='/usr/sbin/sendmail'\n";
-    if (mailbox.spam) result+="if (/^X-Spam-Flag: *YES/)\n{\n  to './Maildir/."+folder_name(mailbox.spam_folder)+"'\n}\n";
+    if (spam.enabled) result+="if (/^X-Spam-Flag: *YES/)\n{\n  to './Maildir/."+spam.folder+"'\n}\n";
     // mailbot suppresses bulk/list messages, DSNs and repeated senders. It gets
     // the message through cc (not command substitution, which has no stdin).
     if (!mailbox.auto_reply.empty())
@@ -153,14 +166,17 @@ void provision_mailbox(const Config& config, const MailboxPlan& mailbox) {
         return reconciliation_step({"provisioning","passwd",mailbox.id,field,mailbox.id,mailbox.organization_id,true},
             std::forward<decltype(operation)>(operation));
     };
+    const auto spam=resolve_spam_policy({mailbox.spam,mailbox.spam_folder,
+        std::to_string(mailbox.retention_days),mailbox.spam_trash}, {},
+        {"provisioning","passwd",mailbox.id,{},mailbox.id,mailbox.organization_id,true});
     auto home=mailbox_home(config,mailbox,true);
     check("Maildir.create",[&] { maildir(home.value,"Maildir"); });
     auto messages=check("Maildir.open",[&] { return child(home.value,"Maildir",false); });
     check("quota",[&] { quota(messages.value,mailbox.quota); });
-    if (mailbox.spam) {
-        check("effective.spamfld",[&] { maildir(messages.value,"."+folder_name(mailbox.spam_folder),true); });
-        if (!mailbox.spam_trash.empty())
-            check("effective.spamtrash",[&] { maildir(messages.value,"."+folder_name(mailbox.spam_trash),true); });
+    if (mailbox.filters && spam.enabled) {
+        check("effective.spamfld",[&] { maildir(messages.value,"."+spam.folder,true); });
+        if (!spam.trash.empty())
+            check("effective.spamtrash",[&] { maildir(messages.value,"."+spam.trash,true); });
     }
     if (mailbox.filters) {
         if (!mailbox.auto_reply.empty()) check("auto_reply.write",[&] { atomic_write(home.value,"auto-reply.txt",mailbox.auto_reply); });
@@ -189,11 +205,14 @@ void remove_mailbox(const Config& config, const std::string& organization_id,
 }
 void clean_spam(const Config& config, const MailboxPlan& mailbox) {
     if (!mailbox.filters || !mailbox.spam) return;
-    if (mailbox.spam_folder==mailbox.spam_trash) throw ApiError{409,"spam_policy_conflict","Spam and trash folders must differ"};
+    const auto policy=resolve_spam_policy({mailbox.spam,mailbox.spam_folder,
+        std::to_string(mailbox.retention_days),mailbox.spam_trash}, {},
+        {"spam_cleanup","passwd",mailbox.id,{},mailbox.id,mailbox.organization_id});
+    if (!mailbox.spam_cleanup_ready || !policy.cleanup_ready) return;
     auto home=mailbox_home(config,mailbox,false);
     auto messages=child(home.value,"Maildir",false);
-    auto spam=child(messages.value,"."+folder_name(mailbox.spam_folder),false);
-    const auto cutoff=std::time(nullptr)-static_cast<std::time_t>(mailbox.retention_days)*86400;
+    auto spam=child(messages.value,"."+policy.folder,false);
+    const auto cutoff=std::time(nullptr)-static_cast<std::time_t>(policy.retention_days)*86400;
     std::size_t budget=10000;
     for (const auto& part : {"new","cur"}) {
         auto source=child(spam.value,part,false);
@@ -206,10 +225,10 @@ void clean_spam(const Config& config, const MailboxPlan& mailbox) {
             struct stat info{};
             if (fstatat(source.value,name.c_str(),&info,AT_SYMLINK_NOFOLLOW)) { if (errno==ENOENT) continue; filesystem_error(); }
             if (!S_ISREG(info.st_mode) || info.st_uid!=geteuid() || info.st_mtime>=cutoff) continue;
-            if (mailbox.spam_trash.empty()) {
+            if (policy.trash.empty()) {
                 if (unlinkat(source.value,name.c_str(),0) && errno!=ENOENT) filesystem_error();
             } else {
-                auto trash=child(messages.value,"."+folder_name(mailbox.spam_trash),false);
+                auto trash=child(messages.value,"."+policy.trash,false);
                 auto destination=child(trash.value,"new",false);
                 // Linux renameat2 moves atomically without replacing mail.
                 // A crash/retry sees either the source or its destination.

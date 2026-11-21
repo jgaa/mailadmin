@@ -1,6 +1,7 @@
 #include "Administration.h"
 #include "Dns.h"
 #include "Security.h"
+#include "SpamPolicy.h"
 #include "logging.h"
 #include <openssl/crypto.h>
 #include <algorithm>
@@ -59,11 +60,28 @@ void policy(Connection& db, std::string_view table, const std::string& id, const
                 if (!value->is_int64() || value->as_int64() < 1 || value->as_int64() > 36500)
                     invalid("Spam retention must be between 1 and 36500 days");
                 content = std::to_string(value->as_int64());
-            } else content = folder_name(text(object, field, 64, field != "spam_trash"), field == "spam_trash");
+            } else content = folder_name(text(object, field, 64, false), true);
             db.query("UPDATE " + std::string{table} + " SET " + column + "=? WHERE "
                 + (table == "passwd" ? "passwd_id" : "organization_id") + "=?", {content, id});
         }
     }
+    const bool changed=std::any_of(policy_columns.begin(),policy_columns.end(),
+        [&](const auto& entry) { return object.contains(entry.first); });
+    if (!changed) return;
+    if (table=="organization") {
+        for (const auto& row : db.query("SELECT spammgt,spamfld,CAST(spamdays AS CHAR),spamtrash,(spamtrash IS NULL) FROM organization WHERE organization_id=?",{id}))
+            (void)resolve_spam_policy({row[0]=="yes",row[1],row[2],
+                row[4]=="1" ? std::optional<std::string>{} : std::optional<std::string>{row[3]}});
+    }
+    // Validate only accounts affected by this policy change. Disabled legacy
+    // settings and unrelated aliases/accounts must not block administrative work.
+    const auto condition=table=="organization" ? "p.organization_id=?" : "p.passwd_id=?";
+    for (const auto& row : db.query("SELECT COALESCE(p.spammgt,o.spammgt),COALESCE(p.spamfld,o.spamfld),"
+            "COALESCE(p.spamdays,o.spamdays),COALESCE(p.spamtrash,o.spamtrash,'Trash'),"
+            "(p.spamtrash IS NULL AND o.spamtrash IS NULL) "
+            "FROM passwd p JOIN organization o ON o.organization_id=p.organization_id WHERE "+std::string{condition},{id}))
+        (void)resolve_spam_policy({row[0]=="yes",row[1],row[2],
+            row[4]=="1" ? std::optional<std::string>{} : std::optional<std::string>{row[3]}});
 }
 void attach_policy(Object& object, const std::vector<std::string>& row, std::size_t offset, bool inherited) {
     for (const auto& field : {"filter_enabled", "spam_enabled", "spam_folder", "spam_retention_days", "spam_trash"}) {
@@ -533,8 +551,6 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
         }
     } else missing();
     if (changed) {
-        if (!db.query("SELECT p.passwd_id FROM passwd p JOIN organization o ON o.organization_id=p.organization_id WHERE COALESCE(p.spamfld,o.spamfld)=COALESCE(p.spamtrash,o.spamtrash) LIMIT 1").empty())
-            throw ApiError{409,"spam_policy_conflict","Spam and trash folders must differ"};
         dirty(db);
         // Logical mutations are committed now; activation is a durable job.
         output["activation"] = activation(db);

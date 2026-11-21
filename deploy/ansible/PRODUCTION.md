@@ -96,8 +96,12 @@ Review these takeover effects before enabling administration:
   filters are preserved.
 - Spam cleanup can run immediately on startup. Review `spammgt`, `spamfld`,
   `spamdays` and `spamtrash`, including account overrides. An empty effective
-  trash folder means permanent deletion of expired spam. The cleanup interval
-  does not provide an initial grace period.
+  trash folder means permanent deletion of expired spam under a complete explicit
+  cleanup policy. Missing effective spam folders now resolve to `Spam` when enabled;
+  incomplete policies can provision delivery without rewriting legacy rows or
+  removing old mail. Cleanup waits for explicit, complete settings for such
+  defaulted policies. Disabled spam handling ignores dormant spam settings.
+  The cleanup interval is not an initial grace period for complete policies.
 
 Require durable MariaDB commits (`innodb_flush_log_at_trx_commit=1`) and enough
 space for backups and InnoDB conversion. Host provisioning installs missing

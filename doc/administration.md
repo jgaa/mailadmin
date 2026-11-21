@@ -148,8 +148,9 @@ The phases establish the provisioning boundary:
   valid accounts from being provisioned in that pass. `field=id` means the
   mailbox address column; `effective.*` means the COALESCE of account and
   organization policy. Both IDs are logged so the operator can check inheritance.
-  Spam folder, trash and retention validation remains unconditional, even when
-  filtering/spam handling is disabled. Forward failures include `record=forward`
+  Spam settings are resolved conditionally: disabled spam handling ignores dormant
+  folder/trash/retention values, while enabled handling applies safe missing-value
+  defaults and rejects explicitly invalid settings (see below). Forward failures include `record=forward`
   and its `forward_id` as `record_id`, plus the owning `passwd_id`.
 - `provisioning`: `provision_mailbox()` has been entered for the logged account.
   `home_identity`/`maildir` failures can still precede filesystem creation.
@@ -164,9 +165,10 @@ The phases establish the provisioning boundary:
   the publisher handoff. `provisioning_started` records whether a mailbox
   provisioning call occurred during this pass (not whether a write succeeded).
 
-Numeric conversion errors retain their original exception behavior and are
-reported with `code=none` and `exception=invalid_argument` or `out_of_range`;
-these are distinct from the structured `ApiError` code `invalid_argument`.
+Spam retention parsing now uses a structured `invalid_argument` error for malformed
+values and `spam_policy_conflict` for an out-of-range retention. Other numeric
+conversion exceptions are reported with `code=none` and a fixed exception category;
+exception text and raw values remain excluded.
 
 Inspect the identified row/policy privately and decide any repair explicitly.
 Reconciliation does not relax validation or repair legacy database values.
@@ -197,6 +199,41 @@ fixed external commands; it must not inherit the Courier system account's
 `nologin` shell. When filter control is disabled, existing
 manually maintained filters are preserved; new mailboxes get direct delivery.
 Forwarding and auto-reply changes need filter control enabled to take effect.
+
+Effective spam policy is resolved centrally for API policy changes, reconciliation,
+filter generation, provisioning and cleanup:
+
+- Account `NULL` values inherit independently from the organization. An explicit
+  empty account folder overrides inheritance; it does not pick up a nonempty
+  organization folder. If spam handling is enabled, a missing/empty effective
+  folder resolves to **`Spam`**, using `Maildir/.Spam`. A valid custom folder,
+  including the legacy lowercase `spam`, is preserved exactly.
+- Missing/empty legacy retention resolves to 30 days. Explicit malformed or
+  out-of-range values remain errors when enabled. A missing trash setting defaults
+  to `Trash`; an explicitly empty trash string still means deletion under an
+  explicitly configured cleanup policy. Spam and trash folders must differ.
+- With spam handling disabled, unused folder, retention and trash settings do not
+  block reconciliation and no spam/trash folders are created. New API inputs still
+  reject unsafe names and invalid retention values even if currently disabled.
+- Defaults are effective values only: reconciliation does not rewrite legacy
+  database rows. Policy mutations validate affected accounts/organization defaults,
+  rather than letting dormant settings on an unrelated account block every change.
+- Managed delivery creates missing Maildir++ directories securely and idempotently.
+  Existing folders, messages and regular safe `maildirfolder` markers are reused
+  without replacement. Symlinks, unsafe ownership and unsafe paths remain errors.
+  With filter management disabled, no spam folders are provisioned.
+- Resolving missing configuration authorizes delivery and safe resource creation,
+  not old-mail removal. Cleanup is deferred if the effective folder or retention
+  needed a default (or trash was absent). An admin must explicitly save complete
+  cleanup settings before cleanup acts on that legacy/default folder. An existing
+  explicit, complete cleanup policy retains its normal scheduled behavior.
+
+The general takeover rule is to default missing optional settings and securely
+create missing owned resources when their purpose is unambiguous. Explicitly
+invalid settings are rejected with record/field/stage diagnostics. Existing legacy
+mail and resources are preserved; configuration resolution itself never moves,
+renames or deletes them. No schema migration or production data correction is
+required for these effective defaults.
 
 Quotas accept an empty string or comma-separated byte (`S`) and message (`C`)
 limits. The database remains the authentication quota source. On a changed

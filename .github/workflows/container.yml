@@ -13,6 +13,7 @@ on:
       - tests/mailstore.cpp
       - tests/dns.cpp
       - tests/reconciliation.cpp
+      - tests/spam_policy.cpp
       - .github/workflows/container.yml
       - '!**/*.md'
   workflow_dispatch:

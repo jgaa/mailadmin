@@ -25,7 +25,7 @@ configure_file(src/version.h.in generated/mailadmin/version.h @ONLY)
 
 add_library(mailadmin_core STATIC
     src/Config.cpp src/Security.cpp src/Database.cpp src/Api.cpp
-    src/Sql.cpp src/Administration.cpp src/Mailstore.cpp src/Reconciler.cpp src/Dns.cpp)
+    src/Sql.cpp src/Administration.cpp src/Mailstore.cpp src/SpamPolicy.cpp src/Reconciler.cpp src/Dns.cpp)
 target_compile_definitions(mailadmin_core PRIVATE RESTINCURL_ENABLE_ASIO=1)
 target_include_directories(mailadmin_core SYSTEM PRIVATE "${restincurl_SOURCE_DIR}/include")
 target_include_directories(mailadmin_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -54,4 +54,7 @@ if(MAILADMIN_BUILD_TESTS)
     add_executable(mailadmin_reconciliation_test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/reconciliation.cpp)
     target_link_libraries(mailadmin_reconciliation_test PRIVATE mailadmin_core)
     add_test(NAME reconciliation_diagnostics COMMAND mailadmin_reconciliation_test)
+    add_executable(mailadmin_spam_policy_test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/spam_policy.cpp)
+    target_link_libraries(mailadmin_spam_policy_test PRIVATE mailadmin_core)
+    add_test(NAME spam_policy COMMAND mailadmin_spam_policy_test)
 endif()

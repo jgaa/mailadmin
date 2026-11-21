@@ -47,8 +47,8 @@ int main() {
     try {
         Config config; config.spool_root=root;
         auto row=std::vector<std::string>{"11","6","owner@example.test",(root/"6"/"11").string(),
-            (root/"6"/"11"/"Maildir").string(),"","yes","no","spam","Trash","30",
-            "PRIVATE password, ma_PRIVATE_API_TOKEN and mailbox contents","no",std::to_string(geteuid()),std::to_string(getegid())};
+            (root/"6"/"11"/"Maildir").string(),"","yes","yes","spam","Trash","30",
+            "PRIVATE password, ma_PRIVATE_API_TOKEN and mailbox contents","no",std::to_string(geteuid()),std::to_string(getegid()),"0"};
         require(detail::mailbox_plans({row},no_forwards).size()==1);
         auto invalid_field = [&](std::size_t column, std::string value, std::string_view field, int status, std::string_view code) {
             reset_log(); auto bad=row; bad[column]=std::move(value);
@@ -65,24 +65,22 @@ int main() {
         };
         invalid_field(2,"private[address]@example.test","id",400,"invalid_argument");
         invalid_field(8,"Legacy.Spam","effective.spamfld",400,"invalid_argument");
-        invalid_field(8,"","effective.spamfld",400,"invalid_argument");
         invalid_field(9,"Legacy.Trash","effective.spamtrash",400,"invalid_argument");
-        invalid_field(10,"0","effective.spamdays/spamfld/spamtrash",409,"spam_policy_conflict");
-        invalid_field(9,"spam","effective.spamdays/spamfld/spamtrash",409,"spam_policy_conflict");
+        invalid_field(10,"0","effective.spamdays",409,"spam_policy_conflict");
+        invalid_field(9,"spam","effective.spamfld/spamtrash",409,"spam_policy_conflict");
         invalid_field(13,std::to_string(geteuid()+1),"uid/gid",409,"mailbox_identity_conflict");
-        // Policy validation is deliberately unchanged even when filters/spam are disabled.
-        auto disabled=row; disabled[6]="no"; disabled[8]="Legacy.Spam";
-        reset_log(); api_failure([&] { detail::mailbox_plans({disabled},no_forwards); },400,"invalid_argument");
-        logged("field=effective.spamfld");
+        // Dormant legacy policies must not block planning, even if incomplete.
+        auto disabled=row; disabled[7]="no"; disabled[8]="Legacy.Spam";
+        disabled[9]="../PRIVATE"; disabled[10]="PRIVATE-not-a-number";
+        reset_log(); require(detail::mailbox_plans({disabled},no_forwards).size()==1);
+        require(diagnostics.str().empty());
         reset_log();
         api_failure([&] { detail::mailbox_plans({row},[](const std::string&) { return Rows{{"73","private[address]@example.test"}}; }); },400,"invalid_argument","Unsupported local part in mail address");
         logged("record=forward record_id=73"); logged("passwd_id=11"); logged("field=destination");
         for (const auto& value : {"PRIVATE-not-a-number","999999999999999999999999999999"}) {
-            auto bad=row; bad[10]=value; reset_log(); bool failed=false;
-            try { detail::mailbox_plans({bad},no_forwards); }
-            catch (const std::invalid_argument&) { failed=true; logged("exception=invalid_argument"); }
-            catch (const std::out_of_range&) { failed=true; logged("exception=out_of_range"); }
-            require(failed); logged("field=effective.spamdays"); logged("code=none"); private_values_absent();
+            auto bad=row; bad[10]=value; reset_log();
+            api_failure([&] { detail::mailbox_plans({bad},no_forwards); },400,"invalid_argument");
+            logged("field=effective.spamdays"); logged("code=invalid_argument");
         }
         reset_log();
         api_failure([&] {

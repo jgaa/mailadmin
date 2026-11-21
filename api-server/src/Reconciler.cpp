@@ -5,6 +5,7 @@
 #include "logging.h"
 #include "ReconciliationDiagnostics.h"
 #include "ReconciliationPlan.h"
+#include "SpamPolicy.h"
 #include <chrono>
 #include <unistd.h>
 
@@ -13,7 +14,7 @@ namespace {
 std::vector<MailboxPlan> plans(Connection& db) {
     return detail::mailbox_plans(db.query("SELECT p.passwd_id,p.organization_id,p.id,p.home,p.maildir,p.quota,"
             "COALESCE(p.filterctl,o.filterctl),COALESCE(p.spammgt,o.spammgt),COALESCE(p.spamfld,o.spamfld),"
-            "COALESCE(p.spamtrash,o.spamtrash),COALESCE(p.spamdays,o.spamdays),COALESCE(p.oomsg,''),p.keep_copy,p.uid,p.gid "
+            "COALESCE(p.spamtrash,o.spamtrash,'Trash'),COALESCE(p.spamdays,o.spamdays),COALESCE(p.oomsg,''),p.keep_copy,p.uid,p.gid,(p.spamtrash IS NULL AND o.spamtrash IS NULL) "
             "FROM passwd p JOIN organization o ON o.organization_id=p.organization_id "
             "JOIN admin_account a ON a.passwd_id=p.passwd_id WHERE a.desired_active='yes' AND o.hosted_here='yes' ORDER BY p.passwd_id"), [&db](const std::string& id) {
         return db.query("SELECT forward_id,destination FROM forward WHERE passwd_id=? ORDER BY forward_id",{id});
@@ -37,15 +38,12 @@ std::vector<MailboxPlan> mailbox_plans(const Rows& rows,
         plan.id=row[0]; plan.organization_id=row[1];
         plan.address=check("id",[&] { return mailbox_address(row[2]); });
         plan.home=row[3]; plan.maildir=row[4]; plan.quota=row[5]; plan.filters=row[6]=="yes";
-        plan.spam=row[7]=="yes";
-        plan.spam_folder=check("effective.spamfld",[&] { return folder_name(row[8]); });
-        plan.spam_trash=check("effective.spamtrash",[&] { return folder_name(row[9],true); });
-        const auto days=check("effective.spamdays",[&] { return std::stoll(row[10]); });
-        check("effective.spamdays/spamfld/spamtrash",[&] {
-            if (days<1 || days>36500 || plan.spam_folder==plan.spam_trash)
-                throw ApiError{409,"spam_policy_conflict","Invalid effective spam retention or folder policy"};
-        });
-        plan.retention_days=days; plan.auto_reply=row[11]; plan.keep_copy=row[12]=="yes";
+        const auto trash=row[15]=="1" ? std::optional<std::string>{} : std::optional<std::string>{row[9]};
+        const auto spam=resolve_spam_policy({row[7]=="yes",row[8],row[10],trash}, {},
+            {"planning","passwd",row[0],{},row[0],row[1]});
+        plan.spam=spam.enabled; plan.spam_folder=spam.folder; plan.spam_trash=spam.trash;
+        plan.retention_days=spam.retention_days; plan.spam_cleanup_ready=spam.cleanup_ready;
+        plan.auto_reply=row[11]; plan.keep_copy=row[12]=="yes";
         for (const auto& forward : forwards(plan.id)) {
             plan.forwards.push_back(reconciliation_step(
                 {"planning","forward",forward[0],"destination",plan.id,plan.organization_id},

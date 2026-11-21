@@ -8,9 +8,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY CMakeLists.txt ./
 COPY api-server/ api-server/
-COPY tests/security.cpp tests/async.cpp tests/mailstore.cpp tests/dns.cpp tests/reconciliation.cpp tests/
+COPY tests/security.cpp tests/async.cpp tests/mailstore.cpp tests/dns.cpp tests/reconciliation.cpp tests/spam_policy.cpp tests/
 RUN cmake -S . -B /build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMAILADMIN_BUILD_TESTS=ON -DMAILADMIN_BUILD_UI=OFF \
-    && cmake --build /build --target mailadmin mailadmin_security_test mailadmin_async_test mailadmin_mailstore_test mailadmin_dns_test mailadmin_reconciliation_test --parallel 2 \
+    && cmake --build /build --target mailadmin mailadmin_security_test mailadmin_async_test mailadmin_mailstore_test mailadmin_dns_test mailadmin_reconciliation_test mailadmin_spam_policy_test --parallel 2 \
     && ctest --test-dir /build --output-on-failure
 # Copy only the application, not dependency headers, tests or static libraries.
 RUN mkdir /artifact && cp /build/api-server/mailadmin /artifact/mailadmin

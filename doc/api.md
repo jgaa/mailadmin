@@ -75,14 +75,21 @@ reverse proxy or API client either.
 | --- | --- | --- |
 | `filter_enabled` | bool | Manage delivery filters |
 | `spam_enabled` | bool | Flagged-spam filing and scheduled cleanup |
-| `spam_folder` | string | Spam folder, letters/digits/underscore/hyphen |
+| `spam_folder` | string | Spam folder, letters/digits/underscore/hyphen; empty uses effective `Spam` when enabled |
 | `spam_retention_days` | integer 1..36500 | Retention age based on message mtime |
 | `spam_trash` | string | Move expired spam here; empty string means delete |
 
 Account policy values may be null to inherit; organization values may not.
 Organization defaults remain filters on, spam off, folder `spam`, 30 days, trash
 `Trash`. Account policy reads show null inheritance rather than an effective
-value. Forwarding and auto-replies use generated filters; when filter management
+value. An empty effective folder uses `Spam` when spam handling is enabled;
+disabled handling ignores dormant spam settings. Missing legacy retention defaults
+to 30 days, but explicit API retention remains an integer in 1..36500. These defaults
+do not write back to the database. Automatic cleanup waits for explicit, complete
+settings when folder/retention needed a fallback, preserving existing mail during
+takeover. New explicit unsafe names/values remain rejected. See
+[effective policy resolution](administration.md#delivery-and-quotas).
+Forwarding and auto-replies use generated filters; when filter management
 is disabled, manual files are preserved. Account deletion immediately removes
 login, aliases and forwards, while its durable cleanup is completed in the
 background. Disabling does not terminate existing IMAP sessions.
