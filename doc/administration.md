@@ -120,6 +120,59 @@ successful after all rebuilds. Ordinary Courier processes receive no new config
 write permission. Changes to the three old generated sources are intentional
 ownership takeover: stop the legacy generator before enabling this helper.
 
+## Diagnose deferred reconciliation
+
+A log containing only `Reconciliation deferred; code=invalid_argument` cannot
+identify the failing row or prove that mailbox provisioning has not started.
+The generation/applied-generation counters show that activation did not complete;
+they do not record which earlier filesystem work finished.
+
+Each validation/provisioning failure now has a preceding ERROR diagnostic such
+as this **illustrative** line:
+
+```text
+Reconciliation step failed; stage=planning record=passwd record_id=30 passwd_id=30 organization_id=6 field=effective.spamfld provisioning_started=no code=invalid_argument exception=none
+```
+
+Look for `Reconciliation step failed` in `journalctl -u mailadmin`. It contains
+only fixed operation/field labels, restricted numeric identifiers, the original
+structured error code and, for numeric conversion exceptions, a fixed exception
+category. It does not log input values or exception messages. API replies and
+`admin_state.last_error` keep their existing sanitized errors; identifiers and
+field context are diagnostic logs only. No MCP/API interface is added.
+
+The phases establish the provisioning boundary:
+
+- `planning`: all enabled, hosted accounts are decoded/validated before **any**
+  `provision_mailbox()` call. A failure in a later account also prevents earlier
+  valid accounts from being provisioned in that pass. `field=id` means the
+  mailbox address column; `effective.*` means the COALESCE of account and
+  organization policy. Both IDs are logged so the operator can check inheritance.
+  Spam folder, trash and retention validation remains unconditional, even when
+  filtering/spam handling is disabled. Forward failures include `record=forward`
+  and its `forward_id` as `record_id`, plus the owning `passwd_id`.
+- `provisioning`: `provision_mailbox()` has been entered for the logged account.
+  `home_identity`/`maildir` failures can still precede filesystem creation.
+  Quota validation occurs **after** home/Maildir creation; a quota error can
+  therefore leave a partially provisioned mailbox for retry. The field labels
+  also identify directory opening/ownership, folder creation and filter writes.
+- `routing`: domain/alias validation follows provisioning of all planned
+  mailboxes. Alias failures include `alias_id` as `record_id`. Domain names are
+  not logged: `record=domain_row` gives the one-based row in the hosted-domain
+  query ordered by `d.name`, together with its `organization_id`.
+- `publication`: the fixed `read_status`/`write_request` operation identifies
+  the publisher handoff. `provisioning_started` records whether a mailbox
+  provisioning call occurred during this pass (not whether a write succeeded).
+
+Numeric conversion errors retain their original exception behavior and are
+reported with `code=none` and `exception=invalid_argument` or `out_of_range`;
+these are distinct from the structured `ApiError` code `invalid_argument`.
+
+Inspect the identified row/policy privately and decide any repair explicitly.
+Reconciliation does not relax validation or repair legacy database values.
+Deploy the diagnostic build through the normal image workflow to identify the
+production record; old code-only log lines alone cannot establish its identity.
+
 ## Delivery and quotas
 
 Each managed mailbox uses `home=<spool>/<organization_id>/<passwd_id>` and

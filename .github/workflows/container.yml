@@ -12,6 +12,7 @@ on:
       - tests/async.cpp
       - tests/mailstore.cpp
       - tests/dns.cpp
+      - tests/reconciliation.cpp
       - .github/workflows/container.yml
       - '!**/*.md'
   workflow_dispatch:

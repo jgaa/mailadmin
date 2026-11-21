@@ -1,6 +1,7 @@
 #include "Mailstore.h"
 #include "Administration.h"
 #include "Security.h"
+#include "ReconciliationDiagnostics.h"
 #include <cerrno>
 #include <ctime>
 #include <dirent.h>
@@ -91,14 +92,19 @@ void validate_path(const Config& config, const std::string& organization_id, con
         throw ApiError{409,"unsafe_mailbox_path","Mailbox path does not match its immutable organization/account identity"};
 }
 Fd mailbox_home(const Config& config, const MailboxPlan& mailbox, bool create) {
-    validate_path(config,mailbox.organization_id,mailbox.id,mailbox.home);
-    if (mailbox.maildir!=mailbox.home+"/Maildir") throw ApiError{409,"unsafe_mailbox_path","Unsupported legacy Maildir path"};
-    auto root=directory(config.spool_root);
-    owned_directory(root.value);
-    auto organization=child(root.value,mailbox.organization_id,create);
-    auto home=child(organization.value,mailbox.id,create);
-    sync_directory(organization.value);
-    sync_directory(root.value);
+    auto check = [&](std::string_view field, auto&& operation) -> decltype(auto) {
+        return reconciliation_step({create ? "provisioning" : "spam_cleanup","passwd",mailbox.id,
+            field,mailbox.id,mailbox.organization_id,create},std::forward<decltype(operation)>(operation));
+    };
+    check("home_identity",[&] { validate_path(config,mailbox.organization_id,mailbox.id,mailbox.home); });
+    check("maildir",[&] {
+        if (mailbox.maildir!=mailbox.home+"/Maildir") throw ApiError{409,"unsafe_mailbox_path","Unsupported legacy Maildir path"};
+    });
+    auto root=check("spool_root.open",[&] { return directory(config.spool_root); });
+    check("spool_root.ownership",[&] { owned_directory(root.value); });
+    auto organization=check("organization_directory",[&] { return child(root.value,mailbox.organization_id,create); });
+    auto home=check("home_directory",[&] { return child(organization.value,mailbox.id,create); });
+    check("home.sync",[&] { sync_directory(organization.value); sync_directory(root.value); });
     return home;
 }
 void erase_tree(int parent, const std::string& name, unsigned depth, std::size_t& budget) {
@@ -143,24 +149,30 @@ std::string render_filter(const MailboxPlan& mailbox) {
     return result;
 }
 void provision_mailbox(const Config& config, const MailboxPlan& mailbox) {
+    auto check = [&](std::string_view field, auto&& operation) -> decltype(auto) {
+        return reconciliation_step({"provisioning","passwd",mailbox.id,field,mailbox.id,mailbox.organization_id,true},
+            std::forward<decltype(operation)>(operation));
+    };
     auto home=mailbox_home(config,mailbox,true);
-    maildir(home.value,"Maildir");
-    auto messages=child(home.value,"Maildir",false);
-    quota(messages.value,mailbox.quota);
+    check("Maildir.create",[&] { maildir(home.value,"Maildir"); });
+    auto messages=check("Maildir.open",[&] { return child(home.value,"Maildir",false); });
+    check("quota",[&] { quota(messages.value,mailbox.quota); });
     if (mailbox.spam) {
-        maildir(messages.value,"."+folder_name(mailbox.spam_folder),true);
-        if (!mailbox.spam_trash.empty()) maildir(messages.value,"."+folder_name(mailbox.spam_trash),true);
+        check("effective.spamfld",[&] { maildir(messages.value,"."+folder_name(mailbox.spam_folder),true); });
+        if (!mailbox.spam_trash.empty())
+            check("effective.spamtrash",[&] { maildir(messages.value,"."+folder_name(mailbox.spam_trash),true); });
     }
     if (mailbox.filters) {
-        if (!mailbox.auto_reply.empty()) atomic_write(home.value,"auto-reply.txt",mailbox.auto_reply);
-        atomic_write(home.value,".mailfilter",render_filter(mailbox));
-        atomic_write(home.value,".courier","| /usr/bin/spamc | /usr/bin/maildrop ./.mailfilter\n");
+        if (!mailbox.auto_reply.empty()) check("auto_reply.write",[&] { atomic_write(home.value,"auto-reply.txt",mailbox.auto_reply); });
+        const auto filter=check("delivery_filter.render",[&] { return render_filter(mailbox); });
+        check("delivery_filter.write",[&] { atomic_write(home.value,".mailfilter",filter); });
+        check("courier_delivery.write",[&] { atomic_write(home.value,".courier","| /usr/bin/spamc | /usr/bin/maildrop ./.mailfilter\n"); });
     } else {
         // An explicit opt-out preserves any manually maintained filter. Only
         // brand-new homes without .courier need a default delivery instruction.
         struct stat info{};
         if (fstatat(home.value,".courier",&info,AT_SYMLINK_NOFOLLOW) && errno==ENOENT)
-            atomic_write(home.value,".courier","./Maildir/\n");
+            check("courier_delivery.write",[&] { atomic_write(home.value,".courier","./Maildir/\n"); });
     }
 }
 void remove_mailbox(const Config& config, const std::string& organization_id,
