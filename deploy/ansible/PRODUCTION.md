@@ -185,7 +185,6 @@ mailservers:
       mailadmin_ui_image: "$MAILADMIN_UI_IMAGE"
       mailadmin_ui_image_archive: ''
       mailadmin_ui_api_url: http://127.0.0.1:8080
-      mailadmin_ui_api_key_source: /root/.config/mailadmin/api-key
       mailadmin_ui_address: 127.0.0.1
       mailadmin_ui_port: 8081
 YAML
@@ -273,10 +272,58 @@ ssh "$MAILADMIN_SSH" bash -s -- "$MAILADMIN_API_IMAGE" <<'REMOTE'
 REMOTE
 ```
 
-Use the configured GID if different from 113. Preserve the plaintext token in a
-password manager/protected backup; the `.sha256` verifier cannot recover it.
+Use the configured GID if different from 113. The `.sha256` verifier cannot
+recover the token; complete the Vault step below before deleting the bootstrap copy.
 For an existing installation, retain the working verifier/token rather than
 running `key create`. Investigate any failed creation before proceeding.
+
+Copy the one-time token to the controller and add it to the **same encrypted
+Vault** as `vault_mailadmin_ui_api_key`. The block below decrypts only into memory,
+merges the token, and atomically replaces the Vault with encrypted output. It
+prompts first to unlock the existing Vault, then to encrypt the updated Vault
+(use the same Vault password). It needs Python's PyYAML, installed with Ansible.
+The temporary directory holds only encrypted output; the original Vault stays
+intact if a command fails.
+
+```bash
+(umask 077; scp "$MAILADMIN_SSH:/root/.config/mailadmin/api-key" "$MAILADMIN_TOKEN_FILE")
+(
+  set -euo pipefail
+  umask 077
+  mailadmin_vault_tmp=$(mktemp -d "$(dirname "$MAILADMIN_VAULT")/.vault-update.XXXXXXXX")
+  trap 'rm -rf -- "$mailadmin_vault_tmp"' EXIT
+  mailadmin_vars=$(ansible-vault view "$MAILADMIN_VAULT")
+  printf '%s\n' "$mailadmin_vars" |
+    python3 -c '
+import re, sys, yaml
+from pathlib import Path
+values = yaml.safe_load(sys.stdin)
+token = Path(sys.argv[1]).read_text().strip()
+if not isinstance(values, dict) or not re.fullmatch(r"ma_[a-f0-9]{64}", token):
+    raise SystemExit("Invalid Vault mapping or API token")
+values["vault_mailadmin_ui_api_key"] = token
+sys.stdout.write(yaml.safe_dump(values))
+' "$MAILADMIN_TOKEN_FILE" |
+    ansible-vault encrypt --output "$mailadmin_vault_tmp/vault.yml"
+  unset mailadmin_vars
+  mv -- "$mailadmin_vault_tmp/vault.yml" "$MAILADMIN_VAULT"
+)
+```
+
+After this succeeds, Vault is the authoritative copy of the bearer token. The API
+retains only `/etc/mailadmin/credentials/api-key.sha256`; the UI playbook reads
+`vault_mailadmin_ui_api_key` and installs its protected runtime credential. Remove
+the server's bootstrap plaintext copy:
+
+```bash
+ssh "$MAILADMIN_SSH" 'rm -- /root/.config/mailadmin/api-key'
+```
+
+Keep the controller token file only for the verification commands below, then
+remove it. On subsequent installations with an existing verifier, use its matching
+saved token instead of generating a new key. To change the saved value manually,
+use `ansible-vault edit "$MAILADMIN_VAULT"`; API key rotation additionally requires
+updating the verifier and restarting the API before redeploying the UI.
 
 Change only `mailadmin_start_service` to `true` in the private inventory, then
 on the **controller** deploy and open a background tunnel:
@@ -288,11 +335,10 @@ ssh -fN -o ExitOnForwardFailure=yes \
   -L 127.0.0.1:28080:127.0.0.1:8080 "$MAILADMIN_SSH"
 ```
 
-In the same controller shell, obtain a private local copy of the plaintext
-token and run the read-only test **without** its staging-fixture option:
+In the same controller shell, use the temporary token file from the Vault setup
+to run the read-only test **without** its staging-fixture option:
 
 ```bash
-(umask 077; scp "$MAILADMIN_SSH:/root/.config/mailadmin/api-key" "$MAILADMIN_TOKEN_FILE")
 python3 tests/staging_smoke.py --url http://127.0.0.1:28080 \
   --token-file "$MAILADMIN_TOKEN_FILE"
 ```
@@ -373,16 +419,16 @@ Before ending maintenance:
 - Confirm no legacy job will overwrite routing sources or bypass desired-state
   tables. Resume delivery/IMAP activity when the checks and backup boundary permit.
 
-For example, inspect activation on the **mailserver** without putting the token
-in command arguments:
+For example, inspect activation through the SSH tunnel on the **controller**
+without putting the token in command arguments:
 
 ```bash
 python3 - <<'PY'
-import json
+import json, os
 from pathlib import Path
 from urllib.request import Request, urlopen
-token = Path('/root/.config/mailadmin/api-key').read_text().strip()
-request = Request('http://127.0.0.1:8080/api/v1/operations',
+token = Path(os.environ['MAILADMIN_TOKEN_FILE']).read_text().strip()
+request = Request('http://127.0.0.1:28080/api/v1/operations',
                   headers={'Authorization': 'Bearer ' + token})
 with urlopen(request, timeout=20) as response:
     print(json.dumps(json.load(response), indent=2))
@@ -399,9 +445,11 @@ plaintext until then, or rotate accounts deliberately through the API.
 
 The initial inventory already selects the GitHub Actions image
 `ghcr.io/jgaa/mailadmin-ui:latest` (or your selected immutable reference), with
-`mailadmin_ui_image_archive: ''`. The API-key source is a file on the **mailserver**.
-The playbook copies it to a protected, read-only container mount. Alternatively
-supply `vault_mailadmin_ui_api_key` in the same encrypted Vault.
+`mailadmin_ui_image_archive: ''`. Its API key comes from
+`vault_mailadmin_ui_api_key` in the same encrypted Vault as the database secret.
+The playbook installs it with `no_log` at `/etc/mailadmin-ui/credentials/api-key`,
+root:65532 mode 0440, and mounts that directory read-only. This runtime file is
+required by the UI; the bootstrap file under `/root/.config/mailadmin` is not.
 
 On the **controller**, pull/deploy the UI and open a background tunnel:
 
@@ -452,6 +500,16 @@ This restarts the API. Keep these values in the inventory/Vault so a later
 `host.yml` run preserves them. Enabling the provider does not automatically queue
 provisioning for every imported domain; request existing-domain provisioning
 explicitly after reviewing ownership and records. See [DNS provisioning](../../doc/dns.md).
+
+After verification, remove the controller's temporary plaintext token file:
+
+```bash
+rm -- "$MAILADMIN_TOKEN_FILE"
+```
+
+Keep the encrypted Vault in your protected backups. Future verification can use
+a temporary mode-0600 export of `vault_mailadmin_ui_api_key` from Vault; it is not
+necessary to retain a separate permanent plaintext copy.
 
 ## Upgrades and recovery
 
