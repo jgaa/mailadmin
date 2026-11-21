@@ -10,7 +10,7 @@ struct Operation {
     int status = 200;
     boost::json::value body;
 };
-void migrate_schema(const Config& config);
+void migrate_schema(const Config& config, std::string_view managed_accounts = {});
 void migrate_passwords(const Config& config);
 boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> config,
     yahat::Request::Type method, std::string target, std::string body);

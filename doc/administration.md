@@ -43,7 +43,8 @@ The migration validates InnoDB, unique organization identities, domain ownership
 alias/account address collisions and orphan aliases/forwards before adding:
 
 - `domain`: canonical ASCII domain primary key; organization foreign key.
-- `admin_account`: desired enabled state, separate from effective Courier login.
+- `admin_account`: desired enabled state, separate from effective Courier login,
+  plus durable mailbox origin, legacy assessment and abandonment reason.
 - `admin_state`: desired/applied generations and a sanitized activation error.
 - `admin_retired_address`: prevent address reuse while old Courier routing remains.
 - `admin_cleanup`: immutable deleted account ID, original organization/home,
@@ -119,6 +120,95 @@ smtpaccess, authentication configuration, certificates or unrelated source files
 successful after all rebuilds. Ordinary Courier processes receive no new config
 write permission. Changes to the three old generated sources are intentional
 ownership takeover: stop the legacy generator before enabling this helper.
+
+## Existing Courier mailbox takeover
+
+In `mailadmin_mode: existing`, host provisioning sets
+`legacy_mailbox_takeover: true` in the daemon configuration (also the daemon's
+safe default when omitted). Synthetic staging sets it false. New API-created
+accounts are explicitly marked `mailbox_origin=managed` and retain normal
+idempotent creation/recovery of their home and Maildir.
+
+An **offline `schema migrate` is required for this upgrade**, even if an earlier
+Mailadmin release already populated `admin_account`. It adds durable origin,
+assessment and reason columns without replacing existing rows, plus a spool-root
+identity in `admin_state`. In existing-server mode, previously unclassified rows
+become `legacy/pending`; repeated migration preserves all completed assessments
+and desired states. No filesystem assessment runs with database-root privileges
+inside the migration container: assessment runs later as the normal mailbox UID.
+
+The old schema recorded no provenance, so it cannot reliably distinguish an
+imported account from an account created through an older Mailadmin API. Before
+restarting, identify any known pre-upgrade Mailadmin-created accounts that must
+retain creation/recovery behavior. Pass their IDs as
+`schema migrate --preserve-managed-accounts 35,40 --config PATH`, or set
+`mailadmin_preupgrade_managed_accounts: '35,40'` in the private Ansible inventory.
+The option applies to unclassified or still-pending rows; it refuses to override
+a completed legacy assessment. Do not guess origin from credentials or mailbox paths.
+
+Reconciliation assesses enabled, hosted legacy accounts **before**
+building mailbox plans or creating any mailbox resources:
+
+- Missing home (including its organization directory): disable with `missing_home`.
+- Existing home but missing Maildir: disable with `missing_maildir`.
+- A regular file at the exact expected Maildir path: disable with
+  `maildir_regular_file`. Account 31's file remains untouched.
+- Accessible, correctly owned home and Maildir directories: record `intact`.
+- Permission errors, I/O/stale-device errors, inaccessible/read-only filesystems,
+  unsupported paths, suspicious symlinks and other unexpected file types: report
+  an actionable failure. They are never classified as abandonment.
+
+Assessment is descriptor-based, uses no-follow lookup/open operations, and never
+reads mailbox contents. Missing-entry decisions require accessible, owned parents
+on a writable filesystem. The configured spool root must be present and healthy;
+its device/inode are pinned durably on first assessment and checked before later
+assessments and before recording decisions. Verify the intended mail mount is
+present before initial takeover. A changed spool identity requires operator
+investigation rather than automatic adoption of a replacement/empty mount.
+
+Each confirmed abandoned decision atomically sets
+`admin_account.desired_active=no`, `passwd.active=no`, assessment/reason, and a new
+routing generation. It preserves credentials, paths, aliases, forwards and all
+remaining filesystem objects. It queues **no deletion/cleanup**. Planning and
+publication continue with valid accounts; aliases targeting disabled accounts
+are excluded from generated routing. Disabled accounts are not re-provisioned,
+including after a crash or restart.
+
+An `intact` legacy account is rechecked without rewriting an unchanged assessment,
+and is provisioned with top-level home/Maildir creation forbidden. Missing owned
+subdirectories such as `Maildir/new` can be repaired. If a home/Maildir later really
+disappears, a fresh confirmed assessment disables it; permission/mount/I/O errors
+leave the previous classification unchanged. A disappearance between assessment
+and provisioning fails safely and is reassessed next pass. Abandoned decisions
+never re-enable themselves if files reappear. New managed accounts are unaffected.
+
+`GET /api/v1/operations` includes an administrative report:
+
+```json
+{"legacy_mailboxes":[{"passwd_id":31,"organization_id":6,"assessment":"abandoned","reason":"maildir_regular_file","desired_active":false,"active":false}]}
+```
+
+The report includes pending/intact legacy accounts too. It contains no passwords,
+tokens, paths or mailbox contents. Logs identify the assessment stage, record IDs
+and fixed reason/error codes. API activation errors remain sanitized. No MCP
+interface is added.
+
+An ordinary enable request cannot override `abandoned`. Recovery is an explicit
+operator operation: restore the original mailbox safely, stop the daemon, review
+and reset that record to `legacy/pending` with desired login enabled and effective
+login disabled, then restart for reassessment and activation. Do not remove the
+account/file or mark it managed just to bypass a failed assessment.
+
+The `legacy_mailbox` regression covers missing resources, account 31's regular
+file, symlinks, unsafe parents, changed spool identity and errno failures including
+permission/I/O/stale-device errors. `legacy_database` starts its own MariaDB with
+networking disabled and a private temporary socket/data directory. It exercises
+upgrading the old two-column `admin_account`, atomic disablement, record/file
+preservation, continued routing, new managed creation and report/retry behavior.
+It never connects to the configured production/staging database. The database
+test skips if MariaDB server/client tools are absent; the API container build
+installs them in its **build stage only** and runs this test. Test artifacts and
+the database server are excluded from the runtime image.
 
 ## Diagnose deferred reconciliation
 

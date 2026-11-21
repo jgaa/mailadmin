@@ -14,6 +14,10 @@ on:
       - tests/dns.cpp
       - tests/reconciliation.cpp
       - tests/spam_policy.cpp
+      - tests/legacy_mailbox.cpp
+      - tests/legacy_database.cpp
+      - tests/run_legacy_database.sh
+      - tests/legacy_schema.sql
       - .github/workflows/container.yml
       - '!**/*.md'
   workflow_dispatch:

@@ -24,6 +24,7 @@ struct Arguments {
     std::string config;
     std::string key_file;
     std::string log_level;
+    std::string managed_accounts;
 };
 
 Arguments parse_arguments(int argc, char** argv) {
@@ -38,6 +39,9 @@ Arguments parse_arguments(int argc, char** argv) {
     po::options_description migration{"Migration options"};
     migration.add_options()
         ("confirm-hash-compatible", "Confirm hash-only SMTP/IMAP authentication was tested before removing plaintext");
+    po::options_description schema_options{"Legacy mailbox migration"};
+    schema_options.add_options()
+        ("preserve-managed-accounts", po::value<std::string>(), "Comma-separated IDs of pre-upgrade Mailadmin-created accounts; preserve normal provisioning");
     po::options_description key{"API key options"};
     key.add_options()
         ("key-file", po::value<std::string>(), "Absolute verifier file path (required)");
@@ -51,7 +55,7 @@ Arguments parse_arguments(int argc, char** argv) {
     // Discover the command, then parse against only its supported options.
     // No arguments are logged: future commands may accept sensitive values.
     po::options_description all;
-    all.add(general).add(server).add(key).add(migration).add(positional_options);
+    all.add(general).add(server).add(key).add(migration).add(schema_options).add(positional_options);
     po::variables_map values;
     po::store(po::command_line_parser(argc, argv).options(all).positional(positional)
                   .style(po::command_line_style::unix_style & ~po::command_line_style::allow_guessing)
@@ -70,6 +74,7 @@ Arguments parse_arguments(int argc, char** argv) {
     visible.add(general);
     if (command == "serve" || command == "schema" || command == "passwords") visible.add(server);
     if (command == "passwords") visible.add(migration);
+    if (command == "schema") visible.add(schema_options);
     if (command == "key") visible.add(key);
     po::options_description selected;
     selected.add(visible).add(positional_options);
@@ -99,6 +104,7 @@ Arguments parse_arguments(int argc, char** argv) {
         if (command == "passwords" && !values.count("confirm-hash-compatible"))
             throw po::error{"Hash compatibility confirmation is required"};
         result.config = values["config"].as<std::string>();
+        if (values.count("preserve-managed-accounts")) result.managed_accounts=values["preserve-managed-accounts"].as<std::string>();
         if (result.config.empty()) throw po::error{"Empty configuration path"};
         if (values.count("log-level")) {
             result.log_level = values["log-level"].as<std::string>();
@@ -149,7 +155,7 @@ int main(int argc, char** argv) {
         initialize_logging(config->log_level);
         if (mysql_library_init(0, nullptr, nullptr)) throw std::runtime_error{"Database library initialization failed"};
         struct Library { ~Library() { mysql_library_end(); } } library;
-        if (args.command == Command::schema_migrate) { migrate_schema(*config); return 0; }
+        if (args.command == Command::schema_migrate) { migrate_schema(*config,args.managed_accounts); return 0; }
         if (args.command == Command::passwords_migrate) { migrate_passwords(*config); return 0; }
         if (geteuid() == 0) throw std::runtime_error{"Run the daemon as the Courier mailbox user, not root"};
         if (config->administration) {

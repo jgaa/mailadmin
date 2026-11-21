@@ -25,7 +25,7 @@ configure_file(src/version.h.in generated/mailadmin/version.h @ONLY)
 
 add_library(mailadmin_core STATIC
     src/Config.cpp src/Security.cpp src/Database.cpp src/Api.cpp
-    src/Sql.cpp src/Administration.cpp src/Mailstore.cpp src/SpamPolicy.cpp src/Reconciler.cpp src/Dns.cpp)
+    src/Sql.cpp src/Administration.cpp src/Mailstore.cpp src/SpamPolicy.cpp src/LegacyMailbox.cpp src/Reconciler.cpp src/Dns.cpp)
 target_compile_definitions(mailadmin_core PRIVATE RESTINCURL_ENABLE_ASIO=1)
 target_include_directories(mailadmin_core SYSTEM PRIVATE "${restincurl_SOURCE_DIR}/include")
 target_include_directories(mailadmin_core PUBLIC src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -57,4 +57,12 @@ if(MAILADMIN_BUILD_TESTS)
     add_executable(mailadmin_spam_policy_test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/spam_policy.cpp)
     target_link_libraries(mailadmin_spam_policy_test PRIVATE mailadmin_core)
     add_test(NAME spam_policy COMMAND mailadmin_spam_policy_test)
+    add_executable(mailadmin_legacy_mailbox_test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/legacy_mailbox.cpp)
+    target_link_libraries(mailadmin_legacy_mailbox_test PRIVATE mailadmin_core)
+    add_test(NAME legacy_mailbox COMMAND mailadmin_legacy_mailbox_test)
+    add_executable(mailadmin_legacy_database_test ${CMAKE_CURRENT_SOURCE_DIR}/../tests/legacy_database.cpp)
+    target_link_libraries(mailadmin_legacy_database_test PRIVATE mailadmin_core)
+    add_test(NAME legacy_database COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/../tests/run_legacy_database.sh
+        $<TARGET_FILE:mailadmin_legacy_database_test> ${CMAKE_CURRENT_SOURCE_DIR}/../tests/legacy_schema.sql)
+    set_tests_properties(legacy_database PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
 endif()

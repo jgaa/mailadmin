@@ -515,6 +515,41 @@ Keep the encrypted Vault in your protected backups. Future verification can use
 a temporary mode-0600 export of `vault_mailadmin_ui_api_key` from Vault; it is not
 necessary to retain a separate permanent plaintext copy.
 
+## Upgrade an installation that already imported legacy accounts
+
+This release needs the administration migration again: the previous
+`admin_account` schema did not record mailbox origin or assessment. Stop Mailadmin
+and legacy writers, take backups, pull the new GitHub Actions image using
+`deploy.yml` with `mailadmin_start_service: false`, and run:
+
+```bash
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/migrate-administration.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass \
+  -e mailadmin_writers_stopped=true --limit production
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/host.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+```
+
+Keep `mailadmin_mode: existing`; the playbooks propagate its takeover policy to
+both migration and runtime configuration. Already imported rows are retained and
+backfilled as pending legacy accounts, not recreated or reset on each restart.
+On first reconciliation, account 31's regular `Maildir` file is preserved and
+both desired/effective login are disabled with reason `maildir_regular_file`.
+Healthy accounts continue through provisioning and routing activation.
+
+The previous schema cannot identify accounts created through an older Mailadmin
+API. If any such accounts must retain normal creation/recovery behavior, list
+those known IDs in private inventory **before migration**, for example
+`mailadmin_preupgrade_managed_accounts: '35,40'`. Do not list genuinely imported
+accounts to work around missing mailbox resources. New API-created accounts are
+marked managed automatically after the upgrade. Review pending/intact/abandoned
+IDs and reasons in authenticated `GET /api/v1/operations` (`legacy_mailboxes`).
+See [takeover and recovery details](../../doc/administration.md#existing-courier-mailbox-takeover).
+
+After migration/provisioning, set `mailadmin_start_service: true`, deploy again,
+and verify activation, existing mail delivery and the legacy report. Merely
+pulling/restarting a new image without the schema migration is insufficient.
+
 ## Upgrades and recovery
 
 For an application-only upgrade, back up persistent state and confirm the desired

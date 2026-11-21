@@ -2,6 +2,8 @@
 #include "Administration.h"
 #include "Security.h"
 #include "SpamPolicy.h"
+#include "LegacyMailbox.h"
+#include <sys/statvfs.h>
 #include "ReconciliationDiagnostics.h"
 #include <cerrno>
 #include <ctime>
@@ -79,8 +81,8 @@ void quota(int messages, const std::string& definition) {
     while (invalidated.size()<5200) invalidated+="0 0\n";
     atomic_write(messages,"maildirsize",invalidated);
 }
-void maildir(int parent, const std::string& name, bool folder=false) {
-    auto fd=child(parent,name,true);
+void maildir(int parent, const std::string& name, bool folder=false, bool create=true) {
+    auto fd=child(parent,name,create);
     for (const auto& part : {"tmp","new","cur"}) { auto sub=child(fd.value,part,true); sync_directory(sub.value); }
     if (folder) {
         // Create missing metadata without replacing an existing legacy marker.
@@ -102,10 +104,10 @@ void validate_path(const Config& config, const std::string& organization_id, con
         || home!=(config.spool_root/organization_id/id).string())
         throw ApiError{409,"unsafe_mailbox_path","Mailbox path does not match its immutable organization/account identity"};
 }
-Fd mailbox_home(const Config& config, const MailboxPlan& mailbox, bool create) {
+Fd mailbox_home(const Config& config, const MailboxPlan& mailbox, bool create, bool provisioning=false) {
     auto check = [&](std::string_view field, auto&& operation) -> decltype(auto) {
-        return reconciliation_step({create ? "provisioning" : "spam_cleanup","passwd",mailbox.id,
-            field,mailbox.id,mailbox.organization_id,create},std::forward<decltype(operation)>(operation));
+        return reconciliation_step({provisioning ? "provisioning" : "spam_cleanup","passwd",mailbox.id,
+            field,mailbox.id,mailbox.organization_id,provisioning},std::forward<decltype(operation)>(operation));
     };
     check("home_identity",[&] { validate_path(config,mailbox.organization_id,mailbox.id,mailbox.home); });
     check("maildir",[&] {
@@ -141,6 +143,67 @@ void erase_tree(int parent, const std::string& name, unsigned depth, std::size_t
     sync_directory(parent);
 }
 }
+namespace {
+void assess_access(int fd) {
+    owned_directory(fd);
+    struct statvfs filesystem{};
+    if (faccessat(fd,".",R_OK|W_OK|X_OK,AT_EACCESS) || fstatvfs(fd,&filesystem)
+        || (filesystem.f_flag&ST_RDONLY)) filesystem_error();
+}
+SpoolIdentity identity(int fd) {
+    struct stat info{};
+    if (fstat(fd,&info)) filesystem_error();
+    return {std::to_string(info.st_dev),std::to_string(info.st_ino)};
+}
+LegacyMailboxStatus inspect(int parent, const std::string& name, bool home) {
+    assess_access(parent);
+    struct stat info{};
+    const auto result=fstatat(parent,name.c_str(),&info,AT_SYMLINK_NOFOLLOW);
+    const auto error=result ? errno : 0;
+    return detail::legacy_entry_status(info,error,home);
+}
+}
+namespace detail {
+LegacyMailboxStatus legacy_entry_status(const struct stat& info, int error, bool home) {
+    if (error==ENOENT) return home ? LegacyMailboxStatus::missing_home : LegacyMailboxStatus::missing_maildir;
+    if (error) filesystem_error();
+    if (S_ISDIR(info.st_mode)) return LegacyMailboxStatus::intact;
+    if (!home && S_ISREG(info.st_mode)) return LegacyMailboxStatus::maildir_regular_file;
+    throw ApiError{409,"unsafe_mailbox_path","Legacy mailbox contains an unexpected object or symlink"};
+}
+}
+SpoolIdentity legacy_spool_identity(const Config& config) {
+    auto root=directory(config.spool_root); assess_access(root.value); return identity(root.value);
+}
+LegacyMailboxStatus assess_legacy_mailbox(const Config& config, const MailboxPlan& mailbox,
+        const SpoolIdentity& expected) {
+    auto check=[&](std::string_view field, auto&& operation) -> decltype(auto) {
+        return reconciliation_step({"legacy_assessment","passwd",mailbox.id,field,mailbox.id,mailbox.organization_id},
+            std::forward<decltype(operation)>(operation));
+    };
+    check("home_identity",[&] { validate_path(config,mailbox.organization_id,mailbox.id,mailbox.home); });
+    check("maildir",[&] {
+        if (mailbox.maildir!=mailbox.home+"/Maildir")
+            throw ApiError{409,"unsafe_mailbox_path","Unsupported legacy Maildir path"};
+    });
+    auto root=check("spool_root",[&] { auto value=directory(config.spool_root); assess_access(value.value); return value; });
+    check("spool_identity",[&] {
+        if (identity(root.value)!=expected)
+            throw ApiError{409,"legacy_spool_changed","Mailbox spool identity changed; verify its mount before assessment"};
+    });
+    auto status=check("organization_directory",[&] { return inspect(root.value,mailbox.organization_id,true); });
+    if (status!=LegacyMailboxStatus::intact) return status;
+    auto organization=check("organization_directory",[&] { return child(root.value,mailbox.organization_id,false); });
+    status=check("home",[&] { return inspect(organization.value,mailbox.id,true); });
+    if (status!=LegacyMailboxStatus::intact) return status;
+    auto home=check("home",[&] { return child(organization.value,mailbox.id,false); });
+    status=check("maildir",[&] { return inspect(home.value,"Maildir",false); });
+    if (status==LegacyMailboxStatus::intact) {
+        auto messages=check("maildir_access",[&] { return child(home.value,"Maildir",false); });
+        check("maildir_access",[&] { assess_access(messages.value); });
+    }
+    return status;
+}
 std::string render_filter(const MailboxPlan& mailbox) {
     const auto spam=resolve_spam_policy({mailbox.spam,mailbox.spam_folder,
         std::to_string(mailbox.retention_days),mailbox.spam_trash});
@@ -169,8 +232,8 @@ void provision_mailbox(const Config& config, const MailboxPlan& mailbox) {
     const auto spam=resolve_spam_policy({mailbox.spam,mailbox.spam_folder,
         std::to_string(mailbox.retention_days),mailbox.spam_trash}, {},
         {"provisioning","passwd",mailbox.id,{},mailbox.id,mailbox.organization_id,true});
-    auto home=mailbox_home(config,mailbox,true);
-    check("Maildir.create",[&] { maildir(home.value,"Maildir"); });
+    auto home=mailbox_home(config,mailbox,mailbox.create_mailbox,true);
+    check("Maildir.create",[&] { maildir(home.value,"Maildir",false,mailbox.create_mailbox); });
     auto messages=check("Maildir.open",[&] { return child(home.value,"Maildir",false); });
     check("quota",[&] { quota(messages.value,mailbox.quota); });
     if (mailbox.filters && spam.enabled) {

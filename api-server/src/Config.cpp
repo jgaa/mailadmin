@@ -23,7 +23,7 @@ Config read_config(const std::filesystem::path& path) {
         "endpoint", "port", "tls_key", "tls_cert", "key_file", "database_socket",
         "database_name", "database_user", "database_password", "log_level",
         "database_timeout_seconds", "database_workers", "max_pending_requests", "administration",
-        "spool_root", "generated_directory", "reconcile_seconds", "spam_cleanup_seconds",
+        "legacy_mailbox_takeover", "spool_root", "generated_directory", "reconcile_seconds", "spam_cleanup_seconds",
         "nsblast_api_url", "nsblast_api_key_file", "dns_default_configuration", "nsblast_mta_sts_https_ready", "default_mail_hostname"};
     for (const auto& member : object) {
         if (!names.contains(member.key())) throw std::runtime_error{"Unknown config field"};
@@ -76,6 +76,10 @@ Config read_config(const std::filesystem::path& path) {
     if (const auto* field = object.if_contains("administration")) {
         if (!field->is_bool()) throw std::runtime_error{"Administration must be boolean"};
         config.administration = field->as_bool();
+    }
+    if (const auto* field=object.if_contains("legacy_mailbox_takeover")) {
+        if (!field->is_bool()) throw std::runtime_error{"Legacy takeover must be boolean"};
+        config.legacy_mailbox_takeover=field->as_bool();
     }
     config.spool_root = string_field("spool_root", config.spool_root.string());
     config.generated_directory = string_field("generated_directory", config.generated_directory.string());

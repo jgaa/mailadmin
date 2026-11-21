@@ -5,5 +5,7 @@ deploy
 doc
 tests/*
 !tests/*.cpp
+!tests/run_legacy_database.sh
+!tests/legacy_schema.sql
 *.tar
 *.log

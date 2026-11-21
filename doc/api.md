@@ -24,7 +24,7 @@ Administration requires the explicit configuration flag and schema migration in
 | `/api/v1/accounts/{id}` | GET, PATCH, DELETE | Account / deletion |
 | `/api/v1/aliases` | GET, POST | Aliases / created alias |
 | `/api/v1/aliases/{id}` | GET, PATCH, DELETE | Alias / deletion |
-| `/api/v1/operations` | GET | Activation generation and pending cleanup jobs |
+| `/api/v1/operations` | GET | Activation generation, pending cleanup jobs, and durable legacy-mailbox assessment report |
 | `/api/v1/reconcile` | POST | Queue a fresh complete reconciliation |
 | `/metrics` | GET | OpenMetrics domain account and alias gauges |
 
@@ -129,3 +129,10 @@ stackful-coroutine executor; blocking MariaDB and filesystem work runs away from
 HTTP executors. `as_tuple(yield)` avoids Boost 1.83's plain-yield exception-pointer
 completion bug. Runtime credentials, SQL parameters and raw connector exceptions
 are never included in application logs.
+
+Legacy takeover metadata is reported in `GET /api/v1/operations` under
+`legacy_mailboxes`: `passwd_id`, `organization_id`, `assessment`, `reason`,
+`desired_active` and `active`. An abandoned legacy account is disabled without
+removing its records or filesystem objects. Enabling it through ordinary PATCH
+returns `409 legacy_mailbox_abandoned` until explicit restoration/reassessment.
+See [existing Courier takeover](administration.md#existing-courier-mailbox-takeover).

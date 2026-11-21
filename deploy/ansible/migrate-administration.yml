@@ -8,6 +8,8 @@
       ansible.builtin.assert:
         that:
           - mailadmin_writers_stopped | default(false) | bool
+          - mailadmin_mode | default('existing') in ['existing', 'staging']
+          - mailadmin_preupgrade_managed_accounts | default('') is match('^([1-9][0-9]*(,[1-9][0-9]*)*)?$')
           - mailadmin_image is defined
           - mailadmin_image is match('^[a-zA-Z0-9][a-zA-Z0-9._/@:-]*$')
         fail_msg: Back up the mail database, convert to InnoDB, and stop legacy/admin writers before setting mailadmin_writers_stopped=true.
@@ -22,7 +24,7 @@
       block:
         - name: Write root-only migration configuration
           ansible.builtin.copy:
-            content: "{{ {'key_file': '/etc/mailadmin/credentials/api-key.sha256', 'database_user': 'root', 'database_socket': mailadmin_database_socket | default('/run/mysqld/mysqld.sock')} | to_nice_json }}\n"
+            content: "{{ {'key_file': '/etc/mailadmin/credentials/api-key.sha256', 'database_user': 'root', 'legacy_mailbox_takeover': (mailadmin_mode | default('existing')) == 'existing', 'database_socket': mailadmin_database_socket | default('/run/mysqld/mysqld.sock')} | to_nice_json }}\n"
             dest: '{{ mailadmin_migration_config.path }}'
             owner: root
             group: root
@@ -47,6 +49,8 @@
               - migrate
               - --config
               - /migration.json
+              - --preserve-managed-accounts
+              - '{{ mailadmin_preupgrade_managed_accounts | default("") }}'
           changed_when: true
       always:
         - name: Remove temporary migration configuration

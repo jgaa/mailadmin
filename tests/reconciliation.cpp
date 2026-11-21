@@ -48,7 +48,7 @@ int main() {
         Config config; config.spool_root=root;
         auto row=std::vector<std::string>{"11","6","owner@example.test",(root/"6"/"11").string(),
             (root/"6"/"11"/"Maildir").string(),"","yes","yes","spam","Trash","30",
-            "PRIVATE password, ma_PRIVATE_API_TOKEN and mailbox contents","no",std::to_string(geteuid()),std::to_string(getegid()),"0"};
+            "PRIVATE password, ma_PRIVATE_API_TOKEN and mailbox contents","no",std::to_string(geteuid()),std::to_string(getegid()),"0","managed","not_required"};
         require(detail::mailbox_plans({row},no_forwards).size()==1);
         auto invalid_field = [&](std::size_t column, std::string value, std::string_view field, int status, std::string_view code) {
             reset_log(); auto bad=row; bad[column]=std::move(value);

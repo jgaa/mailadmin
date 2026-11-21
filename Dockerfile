@@ -3,14 +3,14 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     build-essential cmake git ca-certificates pkg-config \
     libboost-program-options-dev libboost-context-dev \
     libboost-coroutine-dev libboost-chrono-dev \
-    libboost-json-dev libboost-url-dev libssl-dev libcrypt-dev libcurl4-openssl-dev zlib1g-dev libmariadb-dev \
+    libboost-json-dev libboost-url-dev libssl-dev libcrypt-dev libcurl4-openssl-dev zlib1g-dev libmariadb-dev mariadb-server mariadb-client \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY CMakeLists.txt ./
 COPY api-server/ api-server/
-COPY tests/security.cpp tests/async.cpp tests/mailstore.cpp tests/dns.cpp tests/reconciliation.cpp tests/spam_policy.cpp tests/
+COPY tests/security.cpp tests/async.cpp tests/mailstore.cpp tests/dns.cpp tests/reconciliation.cpp tests/spam_policy.cpp tests/legacy_mailbox.cpp tests/legacy_database.cpp tests/run_legacy_database.sh tests/legacy_schema.sql tests/
 RUN cmake -S . -B /build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMAILADMIN_BUILD_TESTS=ON -DMAILADMIN_BUILD_UI=OFF \
-    && cmake --build /build --target mailadmin mailadmin_security_test mailadmin_async_test mailadmin_mailstore_test mailadmin_dns_test mailadmin_reconciliation_test mailadmin_spam_policy_test --parallel 2 \
+    && cmake --build /build --target mailadmin mailadmin_security_test mailadmin_async_test mailadmin_mailstore_test mailadmin_dns_test mailadmin_reconciliation_test mailadmin_spam_policy_test mailadmin_legacy_mailbox_test mailadmin_legacy_database_test --parallel 2 \
     && ctest --test-dir /build --output-on-failure
 # Copy only the application, not dependency headers, tests or static libraries.
 RUN mkdir /artifact && cp /build/api-server/mailadmin /artifact/mailadmin

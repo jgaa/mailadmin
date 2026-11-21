@@ -8,6 +8,7 @@
   'database_password': vault_mailadmin_database_password,
   'log_level': mailadmin_log_level,
   'administration': mailadmin_administration | bool,
+  'legacy_mailbox_takeover': mailadmin_mode == 'existing',
   'spool_root': mailadmin_spool,
   'generated_directory': '/etc/mailadmin/generated',
   'spam_cleanup_seconds': mailadmin_spam_cleanup_seconds | int,

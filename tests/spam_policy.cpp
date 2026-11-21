@@ -64,7 +64,7 @@ int main() {
         Config config; config.spool_root=root;
         const auto legacy=mailbox(config,"867");
         const Rows rows{{legacy.id,legacy.organization_id,legacy.address,legacy.home,legacy.maildir,"","yes","yes",
-            "","Trash","","","no",std::to_string(geteuid()),std::to_string(getegid()),"0"}};
+            "","Trash","","","no",std::to_string(geteuid()),std::to_string(getegid()),"0","managed","not_required"}};
         auto fallback=detail::mailbox_plans(rows,[](const std::string&) { return Rows{}; }).front();
         auto missing_trash=rows; missing_trash[0][8]="Custom_Junk"; missing_trash[0][10]="30"; missing_trash[0][15]="1";
         const auto missing_trash_plan=detail::mailbox_plans(missing_trash,[](const std::string&) { return Rows{}; }).front();

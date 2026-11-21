@@ -10,6 +10,7 @@ struct MailboxPlan {
     std::string spam_folder, spam_trash, auto_reply;
     unsigned retention_days = 30;
     bool spam_cleanup_ready = true;
+    bool create_mailbox = true;
     std::vector<std::string> forwards;
 };
 void provision_mailbox(const Config& config, const MailboxPlan& mailbox);

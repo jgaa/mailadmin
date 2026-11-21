@@ -6,24 +6,25 @@
 #include "ReconciliationDiagnostics.h"
 #include "ReconciliationPlan.h"
 #include "SpamPolicy.h"
+#include "LegacyMailbox.h"
 #include <chrono>
 #include <unistd.h>
 
 namespace mailadmin {
 namespace {
-std::vector<MailboxPlan> plans(Connection& db) {
+std::vector<MailboxPlan> plans(Connection& db, const Config& config) {
     return detail::mailbox_plans(db.query("SELECT p.passwd_id,p.organization_id,p.id,p.home,p.maildir,p.quota,"
             "COALESCE(p.filterctl,o.filterctl),COALESCE(p.spammgt,o.spammgt),COALESCE(p.spamfld,o.spamfld),"
-            "COALESCE(p.spamtrash,o.spamtrash,'Trash'),COALESCE(p.spamdays,o.spamdays),COALESCE(p.oomsg,''),p.keep_copy,p.uid,p.gid,(p.spamtrash IS NULL AND o.spamtrash IS NULL) "
+            "COALESCE(p.spamtrash,o.spamtrash,'Trash'),COALESCE(p.spamdays,o.spamdays),COALESCE(p.oomsg,''),p.keep_copy,p.uid,p.gid,(p.spamtrash IS NULL AND o.spamtrash IS NULL),a.mailbox_origin,a.legacy_assessment "
             "FROM passwd p JOIN organization o ON o.organization_id=p.organization_id "
             "JOIN admin_account a ON a.passwd_id=p.passwd_id WHERE a.desired_active='yes' AND o.hosted_here='yes' ORDER BY p.passwd_id"), [&db](const std::string& id) {
         return db.query("SELECT forward_id,destination FROM forward WHERE passwd_id=? ORDER BY forward_id",{id});
-    });
+    },config.legacy_mailbox_takeover);
 }
 }
 namespace detail {
 std::vector<MailboxPlan> mailbox_plans(const Rows& rows,
-        const std::function<Rows(const std::string&)>& forwards) {
+        const std::function<Rows(const std::string&)>& forwards, bool legacy_takeover) {
     std::vector<MailboxPlan> result;
     for (const auto& row : rows) {
         auto check = [&](std::string_view field, auto&& operation) -> decltype(auto) {
@@ -34,7 +35,12 @@ std::vector<MailboxPlan> mailbox_plans(const Rows& rows,
             if (row[13]!=std::to_string(geteuid()) || row[14]!=std::to_string(getegid()))
                 throw ApiError{409,"mailbox_identity_conflict","Mailbox UID/GID differs from the daemon identity"};
         });
+        check("legacy_assessment",[&] {
+            if (legacy_takeover && row[16]!="managed" && row[17]!="intact")
+                throw ApiError{409,"legacy_assessment_required","Legacy mailbox assessment has not completed"};
+        });
         MailboxPlan plan;
+        plan.create_mailbox=!legacy_takeover || row[16]=="managed";
         plan.id=row[0]; plan.organization_id=row[1];
         plan.address=check("id",[&] { return mailbox_address(row[2]); });
         plan.home=row[3]; plan.maildir=row[4]; plan.quota=row[5]; plan.filters=row[6]=="yes";
@@ -58,13 +64,13 @@ std::vector<MailboxPlan> mailbox_plans(const Rows& rows,
 void reconcile(const Config& config, bool cleanup_spam) {
     Connection db{config};
     auto lock=std::make_unique<AdministrationLock>(db);
-    const auto state=db.query("SELECT generation,applied_generation FROM admin_state WHERE singleton=1").at(0);
     std::vector<MailboxPlan> mailboxes;
-    try { mailboxes=plans(db); }
+    try { assess_legacy_accounts(db,config); mailboxes=plans(db,config); }
     catch (const ApiError& error) {
         db.query("UPDATE admin_state SET last_error=? WHERE singleton=1",{error.code});
         throw;
     }
+    const auto state=db.query("SELECT generation,applied_generation FROM admin_state WHERE singleton=1").at(0);
     bool provisioning_started=false;
     if (state[0]!=state[1]) {
         try {

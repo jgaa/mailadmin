@@ -16,6 +16,7 @@ struct Config {
     unsigned database_workers = 2;
     unsigned max_pending_requests = 16;
     bool administration = false;
+    bool legacy_mailbox_takeover = true;
     std::filesystem::path spool_root = "/var/lib/courier/spool-virtusers";
     std::filesystem::path generated_directory = "/etc/mailadmin/generated";
     unsigned reconcile_seconds = 5;

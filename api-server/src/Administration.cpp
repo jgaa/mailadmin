@@ -2,6 +2,7 @@
 #include "Dns.h"
 #include "Security.h"
 #include "SpamPolicy.h"
+#include "LegacyMailbox.h"
 #include "logging.h"
 #include <openssl/crypto.h>
 #include <algorithm>
@@ -192,7 +193,7 @@ void quota_value(std::string_view quota) {
     }
 }
 
-void migrate_schema(const Config& config) {
+void migrate_schema(const Config& config, std::string_view managed_accounts) {
     Connection db{config};
     AdministrationLock lock{db};
     const auto engines = db.query("SELECT TABLE_NAME,ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('organization','passwd','alias','forward')");
@@ -233,6 +234,7 @@ void migrate_schema(const Config& config) {
     }
     db.query("INSERT IGNORE INTO admin_account(passwd_id,desired_active) SELECT passwd_id,active FROM passwd");
     transaction.commit();
+    migrate_legacy_mailboxes(db,config.legacy_mailbox_takeover,managed_accounts);
     MA_INFO << "Administration schema is ready; domains=" << domains.size();
 }
 void migrate_passwords(const Config& config) {
@@ -455,7 +457,7 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
                 const auto home = (config->spool_root / owner / account_id).string();
                 if (home.size()+8 > 255) invalid("Configured spool path is too long");
                 db.query("UPDATE passwd SET home=?,maildir=? WHERE passwd_id=?",{home,home+"/Maildir",account_id});
-                db.query("INSERT INTO admin_account(passwd_id,desired_active) VALUES(?,'yes')",{account_id});
+                db.query("INSERT INTO admin_account(passwd_id,desired_active,mailbox_origin,legacy_assessment) VALUES(?,'yes','managed','not_required')",{account_id});
                 result.status = 201;
             } else exists(db,"passwd",id);
             if (!id.empty() && input.contains("address")) {
@@ -487,6 +489,8 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
                 OPENSSL_cleanse(password.data(),password.size());
             }
             if (const auto* active = input.if_contains("active")) {
+                if (boolean(*active) && !db.query("SELECT passwd_id FROM admin_account WHERE passwd_id=? AND legacy_assessment='abandoned'",{account_id}).empty())
+                    throw ApiError{409,"legacy_mailbox_abandoned","Restore and explicitly reassess this legacy mailbox before enabling it"};
                 const auto enabled = yes(boolean(*active));
                 db.query("INSERT INTO admin_account(passwd_id,desired_active) VALUES(?,?) ON DUPLICATE KEY UPDATE desired_active=VALUES(desired_active)",{account_id,enabled});
                 if (!active->as_bool()) db.query("UPDATE passwd SET active='no' WHERE passwd_id=?",{account_id});
@@ -554,7 +558,10 @@ boost::asio::awaitable<Operation> administer(std::shared_ptr<const Config> confi
         dirty(db);
         // Logical mutations are committed now; activation is a durable job.
         output["activation"] = activation(db);
-    } else if (resource == "operations") output["activation"] = activation(db);
+    } else if (resource == "operations") {
+        output["activation"] = activation(db);
+        output["legacy_mailboxes"] = legacy_mailbox_report(db);
+    }
     transaction.commit();
     if (changed) MA_INFO << "Administrative mutation committed; resource=" << resource;
     result.body=std::move(output);
