@@ -4,6 +4,8 @@ For takeover of the **existing production mailserver**, follow
 [the production installation guide](PRODUCTION.md). It covers private inventory,
 backups, read-only verification, offline migration, administration cutover, UI
 credentials and recovery without staging initialization.
+Production pulls the GitHub Actions images from GHCR; the local build/archive
+instructions below are for staging.
 
 Run from the repository root. These playbooks target Debian 12/13 over SSH and
 become root for host provisioning. They do not run from the HTTP service.

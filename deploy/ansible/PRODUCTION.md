@@ -6,11 +6,39 @@ authmysql query. Use `mailadmin_mode: existing` throughout. Staging initializati
 must remain disabled. All commands below are instructions for the operator;
 writing this guide does not deploy anything to production.
 
-Run Ansible and build images on the controller, from the repository root.
-Commands marked **mailserver** run in a root Bash shell on the production host.
-The inventory alias is `production`; replace example hostnames and paths before
-running commands. Read [administration and recovery](../../doc/administration.md)
+Run Ansible on the **controller**, from the repository root. Production pulls
+images built by GitHub Actions from GHCR; there are no local builds or archive
+transfers in this procedure. Commands marked **mailserver** run in a root Bash
+shell on that host. Read [administration and recovery](../../doc/administration.md)
 for activation, filter, password and cleanup semantics.
+
+## Set the controller variables once
+
+Edit the host/user and shared mail hostname below, then paste this block into the
+controller's Bash shell. Keep using that shell for the controller commands. All
+inventory, Vault, token-copy and SSH commands below use these variables.
+
+```bash
+export MAILADMIN_PRIVATE_DIR="$HOME/.config/mailadmin/production"
+export MAILADMIN_INVENTORY="$MAILADMIN_PRIVATE_DIR/production.yml"
+export MAILADMIN_VAULT="$MAILADMIN_PRIVATE_DIR/vault.yml"
+export MAILADMIN_TOKEN_FILE="$MAILADMIN_PRIVATE_DIR/api-key"
+export MAILADMIN_HOST="mail.example.net"
+export MAILADMIN_SSH_USER="root"
+export MAILADMIN_SSH="$MAILADMIN_SSH_USER@$MAILADMIN_HOST"
+export MAILADMIN_MAIL_HOSTNAME="mail.example.net"
+export MAILADMIN_API_IMAGE="ghcr.io/jgaa/mailadmin:latest"
+export MAILADMIN_UI_IMAGE="ghcr.io/jgaa/mailadmin-ui:latest"
+install -d -m 0700 "$MAILADMIN_PRIVATE_DIR"
+```
+
+The private files stay outside the repository. If you already have an inventory
+or Vault, set `MAILADMIN_INVENTORY` and `MAILADMIN_VAULT` to those paths and skip
+creating them below. `production` is the inventory host alias used by `--limit`.
+The image variables default to the GitHub Actions `latest` tags. For a repeatable
+cutover, they can instead name published `sha-<full-commit-sha>` tags or digests;
+keep the selected build consistent through migration and verification. Changing
+an image variable later also requires updating that image's value in the inventory.
 
 ## 1. Check the existing server and prepare a maintenance window
 
@@ -111,7 +139,7 @@ on an isolated server with outbound mail disabled before the production cutover.
 SQL dumps and configuration archives contain secrets and must remain private.
 Do not copy production data onto the ordinary staging fixture.
 
-## 3. Prepare images and a private production inventory
+## 3. Create the private inventory and Vault
 
 On the **controller**, install ansible-core >= 2.16 and the collection:
 
@@ -119,27 +147,21 @@ On the **controller**, install ansible-core >= 2.16 and the collection:
 ansible-galaxy collection install -r deploy/ansible/requirements.yml
 ```
 
-Build/test and export the API image locally (Buildah or local Docker):
+Create the inventory with the values selected above. The block refuses to
+replace an existing file. Review UID/GID, spool and database settings against
+step 1 before provisioning. UI settings are included for the optional UI step;
+they do not start the UI by themselves.
 
 ```bash
-./deploy/build-image.sh mailadmin:production \
-  "$HOME/.local/state/mailadmin/images/production.tar"
-```
-
-Alternatively use a tested GitHub Actions image pinned to a commit tag or digest.
-For registry deployment, set `mailadmin_image_archive: ''` and set
-`mailadmin_image` to that exact published reference. Configure a pull-only registry
-credential on the mailserver if needed; do not install the CI publishing PAT there.
-Never build images on the mailserver.
-
-Create `/absolute/private/production.yml` **outside the repository**:
-
-```yaml
+(
+  umask 077
+  set -o noclobber
+  cat > "$MAILADMIN_INVENTORY" <<YAML
 mailservers:
   hosts:
     production:
-      ansible_host: mail.example.net
-      ansible_user: root
+      ansible_host: "$MAILADMIN_HOST"
+      ansible_user: "$MAILADMIN_SSH_USER"
       ansible_python_interpreter: /usr/bin/python3
       mailadmin_mode: existing
       mailadmin_initialize_staging: false
@@ -153,47 +175,72 @@ mailservers:
       mailadmin_state: /var/lib/mailadmin
       mailadmin_endpoint: 127.0.0.1
       mailadmin_port: '8080'
-      mailadmin_image: mailadmin:production
-      mailadmin_image_archive: /absolute/controller/path/production.tar
+      mailadmin_image: "$MAILADMIN_API_IMAGE"
+      mailadmin_image_archive: ''
       mailadmin_start_service: false
       mailadmin_administration: false
       mailadmin_spam_cleanup_seconds: 3600
       mailadmin_nsblast_api_url: ''
-      mailadmin_default_mail_hostname: mail.example.net
+      mailadmin_default_mail_hostname: "$MAILADMIN_MAIL_HOSTNAME"
+      mailadmin_ui_image: "$MAILADMIN_UI_IMAGE"
+      mailadmin_ui_image_archive: ''
+      mailadmin_ui_api_url: http://127.0.0.1:8080
+      mailadmin_ui_api_key_source: /root/.config/mailadmin/api-key
+      mailadmin_ui_address: 127.0.0.1
+      mailadmin_ui_port: 8081
+YAML
+)
 ```
 
-Use the archive's actual controller path and the existing shared mail hostname.
-For a non-root SSH account, configure sudo/become credentials separately (for
-example `--ask-become-pass`). The playbooks use `become: true`.
+Both archive settings must remain empty: the deployment playbooks pull the
+configured GHCR images on the mailserver. For private images, configure a
+pull-only GHCR credential for root's Docker client there before deployment.
+Do not install the CI publishing PAT on the mailserver. Neither the controller
+nor the mailserver compiles these images.
 
-Generate an independent database credential using the image's linked OpenSSL
-library. With Buildah on the **controller**:
+For a non-root SSH account, configure sudo/become credentials separately (for
+example `--ask-become-pass`); the playbooks use `become: true`. The mailserver
+shell commands in this guide require root access as indicated.
+
+Create the encrypted Vault using a fresh OpenSSL-generated 256-bit database
+secret. This block needs the controller's `openssl` executable, but no local
+Docker/Buildah. It prompts for the Vault encryption password and refuses to
+replace an existing Vault:
 
 ```bash
-mailadmin_cli=$(buildah from mailadmin:production)
-buildah run --network none "$mailadmin_cli" -- /usr/local/bin/mailadmin secret create
-buildah rm "$mailadmin_cli"
-ansible-vault create /absolute/private/production-vault.yml
+(
+  set -euo pipefail
+  umask 077
+  test ! -e "$MAILADMIN_VAULT"
+  mailadmin_db_secret=$(openssl rand -hex 32)
+  printf 'vault_mailadmin_database_password: "%s"\n' "$mailadmin_db_secret" |
+    ansible-vault encrypt --output "$MAILADMIN_VAULT"
+  unset mailadmin_db_secret
+)
 ```
 
-Store that 64-character hexadecimal value as
-`vault_mailadmin_database_password: '<generated-value>'` in the encrypted file.
-The Docker equivalent is `docker run --rm --log-driver=none mailadmin:production
-secret create`. Keep the value out of shell arguments, source control and logs.
-This creates a separate daemon database login; do not change or reuse Courier's
-production database credential. No staging auth credential is required.
+The generated value is the required 64-character hexadecimal format and goes
+directly into encryption, without printing it. For an existing Vault, ensure it
+contains `vault_mailadmin_database_password`. This is a separate daemon database
+login; do not change or reuse Courier's production database credential. No staging
+auth credential is required. Edit existing files with:
+
+```bash
+"${EDITOR:-vi}" "$MAILADMIN_INVENTORY"
+ansible-vault edit "$MAILADMIN_VAULT"
+```
 
 ## 4. Provision and verify read-only inventory
 
 On the **controller**, check the target list, provision, and install the image/unit:
 
 ```bash
-ansible-playbook -i /absolute/private/production.yml deploy/ansible/host.yml \
-  --list-hosts --limit production
-ansible-playbook -i /absolute/private/production.yml deploy/ansible/host.yml \
-  -e @/absolute/private/production-vault.yml --ask-vault-pass --limit production
-ansible-playbook -i /absolute/private/production.yml deploy/ansible/deploy.yml \
-  --limit production
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/host.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --list-hosts --limit production
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/host.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/deploy.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
 ```
 
 Existing mode preserves the production authmysql query and does not initialize
@@ -202,10 +249,12 @@ and the publisher timer is disabled. First installation does not start the API.
 `mailadmin_start_service: false` prevents automatic starts/restarts; it does
 **not** stop an already running installation. Stop it explicitly when required.
 
-On the **mailserver**, create the API verifier and capture its one-time plaintext
-token in a root-only file. This example refuses to overwrite the plaintext file:
+On the **controller**, run this SSH block to create the API verifier and capture
+its one-time plaintext token in a root-only file on the mailserver. It uses the
+same GHCR image as the inventory and refuses to overwrite the plaintext file:
 
 ```bash
+ssh "$MAILADMIN_SSH" bash -s -- "$MAILADMIN_API_IMAGE" <<'REMOTE'
 (
   set -euo pipefail
   install -d -m 0700 /root/.config/mailadmin
@@ -214,13 +263,14 @@ token in a root-only file. This example refuses to overwrite the plaintext file:
   docker run --rm --log-driver=none --read-only --cap-drop=ALL \
     --security-opt=no-new-privileges --user 0:0 \
     --mount type=bind,src=/etc/mailadmin/credentials,dst=/etc/mailadmin/credentials \
-    mailadmin:production key create \
+    "$1" key create \
       --key-file /etc/mailadmin/credentials/api-key.sha256 \
       > /root/.config/mailadmin/api-key
   test -s /root/.config/mailadmin/api-key
   chown root:113 /etc/mailadmin/credentials/api-key.sha256
   chmod 0640 /etc/mailadmin/credentials/api-key.sha256
 )
+REMOTE
 ```
 
 Use the configured GID if different from 113. Preserve the plaintext token in a
@@ -228,20 +278,23 @@ password manager/protected backup; the `.sha256` verifier cannot recover it.
 For an existing installation, retain the working verifier/token rather than
 running `key create`. Investigate any failed creation before proceeding.
 
-Change only `mailadmin_start_service` to `true` in the private inventory and rerun
-`deploy.yml`. On the **controller**, open a tunnel:
+Change only `mailadmin_start_service` to `true` in the private inventory, then
+on the **controller** deploy and open a background tunnel:
 
 ```bash
-ssh -N -L 28080:127.0.0.1:8080 root@mail.example.net
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/deploy.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+ssh -fN -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:28080:127.0.0.1:8080 "$MAILADMIN_SSH"
 ```
 
-In another controller terminal, obtain a private local copy of the plaintext
+In the same controller shell, obtain a private local copy of the plaintext
 token and run the read-only test **without** its staging-fixture option:
 
 ```bash
-(umask 077; scp root@mail.example.net:/root/.config/mailadmin/api-key /absolute/private/production-api-key)
+(umask 077; scp "$MAILADMIN_SSH:/root/.config/mailadmin/api-key" "$MAILADMIN_TOKEN_FILE")
 python3 tests/staging_smoke.py --url http://127.0.0.1:28080 \
-  --token-file /absolute/private/production-api-key
+  --token-file "$MAILADMIN_TOKEN_FILE"
 ```
 
 Despite its historical filename/output, this test performs no mutations. Compare
@@ -266,9 +319,11 @@ Set `mailadmin_start_service: false` again in the private inventory. On the
 **controller**, convert the tables and apply the administration schema:
 
 ```bash
-ansible-playbook -i /absolute/private/production.yml deploy/ansible/migrate-innodb.yml \
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/migrate-innodb.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass \
   -e mailadmin_writers_stopped=true --limit production
-ansible-playbook -i /absolute/private/production.yml deploy/ansible/migrate-administration.yml \
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/migrate-administration.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass \
   -e mailadmin_writers_stopped=true --limit production
 ```
 
@@ -277,7 +332,7 @@ for Ansible to stop unknown writers. The first playbook makes an additional lock
 SQL backup when MyISAM conversion is needed; it does not back up an already-InnoDB
 database. The second adds explicit domains, desired account state, activation,
 cleanup and DNS work tables using temporary socket-authenticated database-root
-access. It requires the image to have been loaded in step 4. DDL is resumable,
+access. It requires the GHCR image to have been pulled in step 4. DDL is resumable,
 not transactional. On failure, inspect/resolve the reported conflict and rerun
 while writers remain stopped; do not drop tables or resume the legacy writer.
 Neither migration converts mailbox passwords.
@@ -288,17 +343,23 @@ before granting write access. Then set `mailadmin_administration: true`, leaving
 `mailadmin_start_service: false`, and run:
 
 ```bash
-ansible-playbook -i /absolute/private/production.yml deploy/ansible/host.yml \
-  -e @/absolute/private/production-vault.yml --ask-vault-pass --limit production
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/host.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
 ```
 
 This grants SELECT/INSERT/UPDATE/DELETE without DDL/GRANT, protects the daemon
 configuration with the container-only group, and enables the restricted root
 publisher timer. Host Courier receives no configuration write permission.
 
-Finally set `mailadmin_start_service: true` and rerun `deploy.yml`. This installs
-the write-enabled spool mount and starts reconciliation. Keep those two flags true
-in the inventory for subsequent normal deployments.
+Finally set `mailadmin_start_service: true` in the inventory and deploy:
+
+```bash
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/deploy.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+```
+
+This installs the write-enabled spool mount and starts reconciliation. Keep those
+two flags true in the inventory for subsequent normal deployments.
 
 Before ending maintenance:
 
@@ -336,33 +397,19 @@ plaintext until then, or rotate accounts deliberately through the API.
 
 ## 6. Install the optional administrator UI
 
-Build/export the UI on the **controller**:
+The initial inventory already selects the GitHub Actions image
+`ghcr.io/jgaa/mailadmin-ui:latest` (or your selected immutable reference), with
+`mailadmin_ui_image_archive: ''`. The API-key source is a file on the **mailserver**.
+The playbook copies it to a protected, read-only container mount. Alternatively
+supply `vault_mailadmin_ui_api_key` in the same encrypted Vault.
+
+On the **controller**, pull/deploy the UI and open a background tunnel:
 
 ```bash
-./deploy/build-image.sh mailadmin-ui:production \
-  "$HOME/.local/state/mailadmin/images/ui-production.tar" Dockerfile.ui
-```
-
-Add these settings to the same private production host entry:
-
-```yaml
-      mailadmin_ui_image: mailadmin-ui:production
-      mailadmin_ui_image_archive: /absolute/controller/path/ui-production.tar
-      mailadmin_ui_api_url: http://127.0.0.1:8080
-      mailadmin_ui_api_key_source: /root/.config/mailadmin/api-key
-      mailadmin_ui_address: 127.0.0.1
-      mailadmin_ui_port: 8081
-```
-
-The key source is a file on the **mailserver**, not the controller. The playbook
-copies it to a protected, read-only container mount. Alternatively supply
-`vault_mailadmin_ui_api_key` and pass the encrypted vars file to `deploy-ui.yml`.
-For a registry UI image use an immutable reference and an empty archive setting.
-
-```bash
-ansible-playbook -i /absolute/private/production.yml deploy/ansible/deploy-ui.yml \
-  --limit production
-ssh -N -L 28081:127.0.0.1:8081 root@mail.example.net
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/deploy-ui.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+ssh -fN -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:28081:127.0.0.1:8081 "$MAILADMIN_SSH"
 ```
 
 Open `http://127.0.0.1:28081`. Sign in as `admin`; read its generated password
@@ -394,18 +441,34 @@ URLs, credentials, test-zone names or synthetic addresses.
 Set `mailadmin_nsblast_api_url`, `mailadmin_default_mail_hostname`, and either
 `mailadmin_nsblast_api_key_source` (a protected file on the mailserver) or
 `vault_mailadmin_nsblast_api_key`. Review optional
-`mailadmin_dns_default_configuration`. Apply `configure-dns.yml` with the same
-production inventory/limit, adding the encrypted vars file when using Vault.
-It restarts the API. Keep these values in the inventory/Vault so a later
+`mailadmin_dns_default_configuration`. On the **controller**, apply the settings:
+
+```bash
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/configure-dns.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+```
+
+This restarts the API. Keep these values in the inventory/Vault so a later
 `host.yml` run preserves them. Enabling the provider does not automatically queue
 provisioning for every imported domain; request existing-domain provisioning
 explicitly after reviewing ownership and records. See [DNS provisioning](../../doc/dns.md).
 
 ## Upgrades and recovery
 
-For an application-only upgrade, back up persistent state, choose a tested image
-tag/digest or matching archive, and rerun `deploy.yml` (and `deploy-ui.yml` if
-needed). Only changed images/units restart the enabled service. Apply any required
+For an application-only upgrade, back up persistent state and confirm the desired
+GHCR image references in the inventory. With `latest`, each deployment pulls the
+current GitHub Actions build; with a commit tag/digest, update that reference when
+you deliberately change versions. Keep both archive settings empty. On the
+**controller**, run the API command and, if installed, the UI command:
+
+```bash
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/deploy.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+ansible-playbook -i "$MAILADMIN_INVENTORY" deploy/ansible/deploy-ui.yml \
+  -e "@$MAILADMIN_VAULT" --ask-vault-pass --limit production
+```
+
+Only changed images/units restart the enabled service. Apply any required
 schema migration explicitly in a new offline window. Host package upgrades require
 an intentional `mailadmin_package_state=latest` run of `host.yml`; the default is
 `present`. Package changes and schema changes have their own rollback boundary.
