@@ -76,6 +76,7 @@ jobs:
           push: true
           tags: |
             ${{ steps.metadata.outputs.image }}:latest
+            ${{ steps.metadata.outputs.image }}:v${{ steps.metadata.outputs.version }}
             ${{ steps.metadata.outputs.image }}:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
