@@ -57,6 +57,9 @@ mailbot`; installation alone does not prove that an old `.mailfilter` works.
 
 ## Staging and repeatable deployment
 
+For installation on the existing production server, use the
+[production installation guide](../deploy/ansible/PRODUCTION.md).
+
 See [the Ansible runbook](../deploy/ansible/README.md) for exact commands.
 Playbooks deliberately separate:
 
